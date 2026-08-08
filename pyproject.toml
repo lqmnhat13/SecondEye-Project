@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secondeye"
+version = "0.1.0"
+description = "Research MVP for a multimodal assistive AI system for blind and low-vision users"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = []
+
+[project.optional-dependencies]
+detection = [
+    "certifi==2026.7.22",
+    "onnx>=1.16,<2",
+    "onnxruntime>=1.18,<2",
+    "onnxslim>=0.1.82,<1",
+    "ultralytics==8.4.115",
+]
+dev = ["pytest==9.1.1"]
+
+[project.scripts]
+secondeye-detection = "secondeye.detection.pipeline:main"
+secondeye-validate-manifest = "secondeye.data.protocol:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+pythonpath = ["src"]

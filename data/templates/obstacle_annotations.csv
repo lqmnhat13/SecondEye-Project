@@ -1,0 +1,1 @@
+sample_id,object_id,class_raw,class_canonical,bbox_xmin,bbox_ymin,bbox_xmax,bbox_ymax,direction,hazard_label,hazard_reason,distance_band,distance_evidence,occlusion,truncation,annotator_id,reviewer_id,review_status

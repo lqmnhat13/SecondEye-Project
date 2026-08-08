@@ -1,0 +1,44 @@
+[protocol]
+name = "SecondEye MVP dataset protocol"
+version = "0.1.0"
+updated = "2026-08-04"
+split_seed = 20260804
+status = "pre-collection"
+
+[split]
+unit = "group_id"
+development_fraction = 0.75
+test_fraction = 0.25
+allowed = ["development", "test", "quarantine"]
+freeze_test_before_final_experiments = true
+
+[targets.obstacle]
+planned_min = 200
+planned_max = 500
+unit = "image_or_selected_video_frame"
+
+[targets.ocr]
+planned_min = 150
+planned_max = 300
+unit = "image"
+
+[targets.vqa]
+planned_min = 100
+planned_max = 200
+unit = "image"
+questions_per_image_min = 2
+questions_per_image_max = 3
+
+[quality]
+test_requires_review = true
+safety_label_requires_review = true
+duplicate_hash_may_not_cross_groups = true
+scene_may_not_cross_splits = true
+video_may_not_cross_splits = true
+
+[vocabulary]
+tasks = ["obstacle", "ocr", "vqa"]
+source_types = ["self_collected", "public_dataset", "synthetic", "participant"]
+consent_statuses = ["not_applicable", "pending", "approved", "withdrawn"]
+annotation_statuses = ["pending", "in_review", "accepted", "rejected"]
+

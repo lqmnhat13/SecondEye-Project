@@ -1,0 +1,58 @@
+[model]
+base_weights = "yolo11n.pt"
+image_size = 640
+confidence_threshold = 0.35
+iou_threshold = 0.50
+device = "auto"
+
+[training]
+epochs = 80
+batch_size = 8
+patience = 15
+workers = 2
+seed = 42
+deterministic = true
+
+[export]
+format = "onnx"
+opset = 17
+dynamic = true
+simplify = true
+
+[paths]
+dataset_root = "data/local/secondeye_obstacles"
+runs_root = "runs/secondeye"
+artifact_root = "artifacts/object_obstacle"
+
+[class_schema]
+names = [
+  "person",
+  "bicycle",
+  "motorcycle",
+  "car",
+  "bus",
+  "truck",
+  "chair",
+  "pole",
+  "stairs_up",
+  "stairs_down",
+  "pothole",
+  "barrier",
+]
+
+[risk]
+central_zone_fraction = 0.40
+candidate_classes = [
+  "person",
+  "bicycle",
+  "motorcycle",
+  "car",
+  "bus",
+  "truck",
+  "chair",
+  "pole",
+  "stairs_up",
+  "stairs_down",
+  "pothole",
+  "barrier",
+]

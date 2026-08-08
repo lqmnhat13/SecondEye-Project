@@ -1,0 +1,41 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# Model weights and generated runtime output
+*.pt
+*.onnx
+*.mlpackage
+runs/
+artifacts/
+results/*.json
+results/*.jsonl
+logs/
+
+# Local/generated research deliverables; may contain personal or submission data
+output/
+outputs/
+docs/dang-ky-de-tai-kltn-hk1-2026-2027.md
+docs/de-cuong-chi-tiet-kltn-second-eye.md
+
+# Research data are local by default. Track only documentation/manifests.
+data/raw/*
+!data/raw/.gitkeep
+data/annotations/*
+!data/annotations/.gitkeep
+data/local/
+data/samples/*.jpg
+data/samples/*.jpeg
+data/samples/*.png
+
+# Local document/PDF QA artifacts
+.codex-doc-review/
+tmp/
