@@ -1,5 +1,5 @@
 [model]
-base_weights = "yolo11n.pt"
+base_weights = "yolo26m.pt"
 image_size = 640
 confidence_threshold = 0.35
 iou_threshold = 0.50
@@ -7,7 +7,7 @@ device = "auto"
 
 [training]
 epochs = 80
-batch_size = 8
+batch_size = 4
 patience = 15
 workers = 2
 seed = 42
@@ -20,39 +20,45 @@ dynamic = true
 simplify = true
 
 [paths]
-dataset_root = "data/local/secondeye_obstacles"
+dataset_root = "data/local/indoor_dataset_v1_1"
 runs_root = "runs/secondeye"
 artifact_root = "artifacts/object_obstacle"
 
 [class_schema]
 names = [
   "person",
-  "bicycle",
-  "motorcycle",
-  "car",
-  "bus",
-  "truck",
   "chair",
-  "pole",
+  "table_desk",
+  "sofa",
+  "bed",
+  "cabinet",
+  "doorway_open",
+  "door_closed",
+  "glass_door",
   "stairs_up",
   "stairs_down",
-  "pothole",
-  "barrier",
+  "backpack_bag",
+  "box",
+  "trash_bin",
+  "column",
 ]
 
 [risk]
 central_zone_fraction = 0.40
 candidate_classes = [
   "person",
-  "bicycle",
-  "motorcycle",
-  "car",
-  "bus",
-  "truck",
   "chair",
-  "pole",
+  "table_desk",
+  "sofa",
+  "bed",
+  "cabinet",
+  "doorway_open",
+  "door_closed",
+  "glass_door",
   "stairs_up",
   "stairs_down",
-  "pothole",
-  "barrier",
+  "backpack_bag",
+  "box",
+  "trash_bin",
+  "column",
 ]

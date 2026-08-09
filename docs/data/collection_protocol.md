@@ -1,71 +1,82 @@
-# Collection protocol - SecondEye MVP
+# Public dataset acquisition protocol - SecondEye MVP
 
-Phiên bản: 0.1.0  
-Cập nhật: 2026-08-04  
-Trạng thái: chưa bắt đầu thu tập chính.
+Phiên bản: 0.3.0
+
+Cập nhật: 2026-08-09
+
+Trạng thái: đang bổ sung obstacle indoor v1.1 chỉ từ nguồn công khai; không tự chụp và không thu dữ liệu người tham gia.
 
 ## 1. Cổng bắt buộc
 
-Trước bất kỳ phiên thu tập chính nào:
+Trước khi nhập bất kỳ nguồn dữ liệu công khai nào:
 
 1. GVHD duyệt target, annotation guide và split protocol.
-2. Xác định data owner, ngày kết thúc, thời hạn lưu và kênh yêu cầu xóa.
-3. Kiểm tra quyền đối với địa điểm, vật thể, tài liệu và dataset công khai.
-4. Nếu có người tham gia hoặc ảnh/giọng nói nhận dạng được: có phê duyệt/miễn trừ phù hợp và consent form dễ tiếp cận.
+2. Xác định data owner, ngày kết thúc và thời hạn lưu bản local.
+3. Kiểm tra trang chính thức, phiên bản, giấy phép pixels/annotation và điều kiện phái sinh.
+4. Kiểm tra ảnh có người, dữ liệu nhạy cảm hoặc hạn chế sử dụng dù nguồn được công bố công khai.
 5. Kiểm tra vùng lưu trữ local, backup được phép và quyền truy cập tối thiểu.
 
-Dữ liệu người tham gia vẫn **bị khóa** cho đến khi đủ các cổng trên. Protocol tham chiếu [Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15](https://vanban.chinhphu.vn/?classid=1&docid=214590&pageid=27160&typegroup=), nhưng không thay thế rà soát pháp lý/đạo đức của trường.
+Dữ liệu người tham gia nằm ngoài phạm vi v1.1. Protocol tham chiếu [Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15](https://vanban.chinhphu.vn/?classid=1&docid=214590&pageid=27160&typegroup=), nhưng không thay thế rà soát pháp lý/đạo đức của trường.
 
-## 2. Môi trường an toàn
+## 2. Nguồn và dữ liệu an toàn
 
-- Pilot trong nhà, khu vực kiểm soát, không có giao thông hoặc cầu thang nguy hiểm.
-- Người chụp đứng yên hoặc có người giám sát; không yêu cầu bịt mắt.
-- Không dùng SecondEye làm công cụ duy nhất để tránh vật cản trong phiên thu.
-- Có lối dừng/thoát phiên rõ ràng; dừng ngay khi camera, dây cáp hoặc bố trí tạo nguy cơ.
-- Tránh ghi hình người ngoài cuộc, màn hình cá nhân, biển số và tài liệu có định danh.
+- Chỉ tải từ trang chính thức hoặc kho do tác giả dataset công bố.
+- Không dùng ảnh lấy tùy ý từ Google Images, mạng xã hội hoặc website không rõ quyền.
+- Không coi giấy phép dataset là bằng chứng tự động rằng mọi ảnh người đều phù hợp với mục đích dự án.
+- Quarantine ảnh có khuôn mặt nhận dạng được, địa chỉ, màn hình cá nhân, biển số hoặc tài liệu định danh.
+- Không dùng SecondEye làm công cụ duy nhất để tránh vật cản trong demo camera.
 
 ## 3. Cấu trúc lưu trữ local
 
 ```text
 data/local/
-  quarantine/       file chưa xác minh quyền/consent hoặc chờ redaction
-  raw/              asset được phép, bất biến
+  indoor_pilot_v1/                 pilot 80 ảnh đã khóa, không sửa
+  indoor_dataset_v1_1/             dataset YOLO làm việc đã gán nhãn/review
+  public_cache/      archive/metadata tải từ nguồn chính thức
+  quarantine/       file chưa xác minh quyền/license/privacy hoặc chờ redaction
+  raw/              asset public được chấp nhận, bất biến
   derived/          frame chọn, redaction, resize; có nguồn gốc tới raw
   annotations/      manifest và nhãn đang làm
   releases/v0.1/    manifest/nhãn đã khóa, không chứa consent record
 ```
 
-`data/local/` không commit. Consent record và bảng ánh xạ subject key được lưu riêng, quyền truy cập hạn chế, không đặt cạnh ảnh phát hành.
+`data/local/` không commit. Chỉ thống kê tổng hợp và tài liệu nguồn đã rà soát mới
+được cân nhắc đưa lên GitHub.
 
 ## 4. ID và đơn vị nhóm
 
-- Tạo `capture_session_id` cho một phiên thu liên tục.
-- Tạo `scene_id` khi thay địa điểm/bố cục/nhiệm vụ thực tế.
+- Dùng `capture_session_id` như mã batch nhập nguồn public, ví dụ `ses_oi_v7_01`.
+- Tạo `scene_id` từ ID nguồn/cảnh; không suy diễn hai ảnh độc lập là cùng scene.
 - Tạo `video_id` cho mỗi clip.
 - `group_id` bao trùm mọi frame/burst/near-duplicate của cùng cảnh và cùng asset dùng qua nhiều tác vụ.
 - Không mã hóa tên người/địa điểm nhà riêng vào ID.
 
-Ví dụ: `ses_20260804_01`, `scn_lab_table_01`, `vid_0001`, `grp_lab_table_01`.
+Ví dụ: `ses_oi_v7_01`, `scn_oi_ab12`, `vid_source_0001`, `grp_oi_ab12`.
 
 ## 5. Pilot
 
-1. Thu 10–20 ảnh development không có người nhận dạng được.
+1. Chọn 10–20 ảnh development từ nguồn public có license rõ ràng.
 2. Hoàn thành manifest/hash và gán nhãn theo guide.
 3. Chạy validator; kiểm tra thủ công near-duplicate.
 4. Hai người hoặc annotator + reviewer thử guide trên cùng subset.
-5. Sửa ambiguity và tăng version trước khi thu tập chính.
+5. Sửa ambiguity và tăng version trước khi nhập batch lớn hơn.
 
 Pilot không được tự động đưa vào test; muốn giữ phải qua review giống tập chính.
 
-## 6. Kế hoạch obstacle: 200–500 mẫu
+## 6. Kế hoạch obstacle: tối thiểu 250 mẫu
 
-### Capture strata dự kiến
+### Coverage dự kiến
 
-- Thiết bị camera thực dùng cho demo.
+- Nhiều nguồn/camera công khai nếu metadata sẵn có; không tuyên bố đại diện thiết bị đích.
 - Sáng thường, thiếu sáng trong nhà, ngược sáng.
 - Vật cản trung tâm/bên; nhiều kích thước và che khuất.
 - Lớp COCO phổ biến và `other_obstacle` như thùng, dây, mép vật thấp.
 - Có mẫu không hazard và mẫu khó/không xác định để đo false alert/abstention.
+- Mỗi lớp trong schema 15 lớp cần ít nhất khoảng 20 bbox trước cổng train v1.1.
+- Đợt public v1.1 đã nhập/relabel đủ 10 lớp từng trống; bước kế tiếp là khóa
+  fingerprint, fine-tune và đánh giá, không tiếp tục thêm ảnh sau khi xem metric
+  mà không tăng version.
+- `person` chỉ dùng ảnh public có quyền phù hợp và privacy review; ưu tiên không nhận dạng được hoặc đã làm mờ mặt.
 
 ### Video/burst
 
@@ -76,16 +87,16 @@ Pilot không được tự động đưa vào test; muốn giữ phải qua revi
 
 ### Khoảng cách
 
-- Nếu cần ground truth, dùng phép đo/reference độc lập trong môi trường an toàn.
-- Ghi phương pháp đo và sai số; không dùng monocular depth output làm ground truth cho chính ablation depth.
-- Trước khi khóa band gần/trung bình/xa, chạy calibration/pilot và GVHD duyệt ranh giới.
+- Không có phép đo độc lập từ dataset public thì `distance_band=unknown`.
+- Không suy ra mét hoặc band ground truth chỉ từ kích thước bbox/monocular depth.
+- Depth/risk chỉ được đánh giá định tính hoặc trên nguồn có ground truth phù hợp được kiểm tra riêng.
 
 ## 7. Kế hoạch OCR: 150–300 ảnh
 
-- Dùng nội dung dự án sở hữu/được phép: biển tự tạo, nhãn hàng hợp lệ, menu/tờ rơi công khai, tài liệu giả lập.
+- Dùng dataset public hoặc tài liệu synthetic do dự án tạo, có provenance và quyền sử dụng rõ ràng.
 - Bao phủ chữ có dấu, nhiều cỡ/font, nền, góc xiên, chói và mờ có kiểm soát.
 - Tránh hồ sơ thật, hóa đơn có dữ liệu cá nhân, thẻ, địa chỉ nhà, số điện thoại/email cá nhân.
-- Chụp cả `clear`, `degraded`, `partial`, `unreadable` để đánh giá từ chối.
+- Chọn/tạo cả `clear`, `degraded`, `partial`, `unreadable` để đánh giá từ chối.
 - Không dùng cùng template văn bản ở cả development và test nếu bố cục/nội dung tạo near-duplicate; gom theo document/template group.
 
 ## 8. Kế hoạch VQA: 100–200 ảnh
@@ -106,24 +117,23 @@ Pilot không được tự động đưa vào test; muốn giữ phải qua revi
 6. Gán nhãn, review và đặt `annotation_status=accepted`.
 7. Chỉ sau đó mới đưa vào inventory để chia development/test.
 
-## 10. Kiểm soát chất lượng phiên thu
+## 10. Kiểm soát chất lượng batch nhập
 
-Sau mỗi phiên:
+Sau mỗi batch nguồn:
 
-- Đếm asset thu/loại/quarantine theo lý do.
+- Đếm asset nhập/loại/quarantine theo lý do.
 - Kiểm tra file hỏng, orientation, hash trùng và metadata thiếu.
 - Xem contact sheet để phát hiện burst/near-duplicate và sửa group, chưa chia split.
-- Kiểm tra coverage strata; không thu thêm chỉ để cải thiện kết quả model.
-- Ghi log protocol version, thiết bị, người vận hành mã hóa và sự cố.
+- Kiểm tra coverage strata; không nhập thêm chỉ để cải thiện kết quả model.
+- Ghi log protocol version, source/version/license/checksum, người xử lý mã hóa và sự cố.
 
-## 11. Đồng thuận, rút lui và sự cố
+## 11. Privacy, gỡ nguồn và sự cố
 
-- Người tham gia được giải thích mục đích, dữ liệu thu, nơi lưu, ai truy cập, thời hạn, rủi ro, công bố và quyền dừng/rút.
-- Consent phải có định dạng tiếp cận được; không coi im lặng là đồng thuận.
-- Khi rút: đổi trạng thái `withdrawn`, quarantine ngay, ánh xạ và xóa raw/derived/annotation/backups theo kế hoạch đã duyệt, rồi tăng dataset version.
+- Không thu người tham gia trong v1.1; `consent_status=not_applicable` không miễn privacy review cho ảnh public.
+- Khi nguồn bị gỡ, đổi license hoặc có yêu cầu hợp lệ: quarantine asset liên quan, xóa khỏi release và tăng dataset version.
 - Nếu lộ dữ liệu/sai quyền: dừng thu, cô lập bản sao, ghi sự cố và báo người có trách nhiệm; không tự ý tiếp tục dùng.
 
-## 12. Checklist kết thúc collection
+## 12. Checklist kết thúc acquisition
 
 - [ ] Đạt target hoặc có lý do dừng được ghi rõ.
 - [ ] Không còn mẫu `pending` trong development/test.
@@ -132,4 +142,3 @@ Sau mỗi phiên:
 - [ ] Near-duplicate đã gom group trước split.
 - [ ] Chạy validator không có error.
 - [ ] Cập nhật data card bằng số thật và lý do loại mẫu.
-

@@ -1,7 +1,7 @@
 # Annotation guide - SecondEye MVP
 
-Phiên bản: 0.1.0  
-Cập nhật: 2026-08-04  
+Phiên bản: 1.0.0
+Cập nhật: 2026-08-09
 Áp dụng cho: obstacle, OCR tiếng Việt và VQA/scene.
 
 ## 1. Nguyên tắc chung
@@ -33,9 +33,11 @@ Cập nhật: 2026-08-04
 
 ### 3.2 Lớp
 
-- `class_raw`: mô tả nhìn thấy bằng tiếng Việt, ví dụ `ghế`, `thùng carton`, `dây điện`.
-- `class_canonical`: nhãn đánh giá đã chốt; dùng `other_obstacle` nếu ngoài taxonomy.
-- Không ép vật cản ngoài COCO vào một lớp COCO gần giống.
+- Schema v1 khóa đúng 15 lớp và class ID tại `indoor_schema_v1.md`.
+- `class_raw`: mô tả nhìn thấy bằng tiếng Việt, ví dụ `ghế`, `thùng carton`, `cửa kính`.
+- `class_canonical`: chỉ nhận một trong 15 nhãn đã khóa; vật ngoài taxonomy không được ép vào lớp gần giống và phải ghi vào backlog schema.
+- Generic `Door`/`Stairs` từ dataset ngoài không được tự động ánh xạ sang trạng thái cửa hoặc hướng cầu thang.
+- Mọi thay đổi tên/thứ tự lớp làm tăng major schema version và yêu cầu chuyển đổi toàn bộ label.
 
 ### 3.3 Hướng
 
@@ -169,4 +171,3 @@ Không hỏi danh tính người, cảm xúc, chủng tộc, sức khỏe, ý đ
 - Viết reference VQA dài, chứa chi tiết không nhìn thấy.
 - Dùng output model để quyết định ground truth.
 - Ghi tên người tham gia trong `sample_id`, đường dẫn hoặc notes.
-

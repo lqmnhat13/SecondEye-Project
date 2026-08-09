@@ -8,10 +8,13 @@ SecondEye là nguyên mẫu nghiên cứu đa phương thức hỗ trợ ngườ
 
 - Giai đoạn 0: bản nháp phạm vi, Charter, kế hoạch 10 tuần và checklist bảo vệ đã có.
 - Giai đoạn 1: đã xác minh 20 nguồn, hoàn thành literature matrix, BibTeX và bản tổng hợp research gap; chuẩn trích dẫn của trường còn cần xác nhận.
-- Giai đoạn 2: đã có [data card, annotation/collection/split protocol](docs/data/README.md), CSV templates và leakage validator; dữ liệu thực tế chưa thu, số mẫu được chấp nhận hiện là 0.
-- Pipeline YOLO11 từ notebook đã được chuyển thành CLI chạy local: validate dữ liệu,
+- Giai đoạn 2: schema indoor v1 gồm 15 lớp đã khóa; dataset public v1.1 tại
+  `data/local/indoor_dataset_v1_1` có **276 ảnh/603 bbox**, phủ đủ 15 lớp và mỗi
+  lớp có ít nhất 20 bbox. YOLO validator, manifest audit và visual/privacy review
+  đều đã qua. Dự án không tự chụp và không đưa dataset lên Git public.
+- Pipeline hiện dùng YOLO26m và được chuyển từ notebook YOLO11 thành CLI chạy local: validate dữ liệu,
   train, đánh giá val/test, kiểm tra ONNX, predict ảnh và webcam. Chưa có checkpoint
-  12 lớp vì dữ liệu thực tế chưa được cung cấp/huấn luyện.
+  15 lớp vì bước fine-tune/evaluate chưa chạy trên dataset v1.1 vừa khóa.
 - OCR, depth, VQA, speech và demo end-to-end: chưa triển khai.
 
 Theo dõi chi tiết tại [PROJECT_STATUS.md](PROJECT_STATUS.md). Nguồn yêu cầu chính là `output/pdf/Cam_nang_KLTN_SecondEye.pdf`.
@@ -49,36 +52,58 @@ secondeye-validate-manifest data/local/sample_manifest.csv \
   --config configs/data_protocol.toml --require-rows
 ```
 
-## Pipeline YOLO11 chạy local
+## Pipeline YOLO26 chạy local
 
 Notebook Colab cũ đã được thay bằng lệnh `secondeye-detection`; không còn Google Drive,
-JavaScript camera, shell magic hay URL Gradio công khai. Cấu hình mặc định nằm tại
-`configs/yolo11_obstacles.toml`.
+JavaScript camera, shell magic hay URL Gradio công khai. Pipeline hiện dùng
+`yolo26m.pt`; cấu hình mặc định nằm tại `configs/yolo26_obstacles.toml`.
 
 ```bash
 python -m pip install ".[dev,detection]"
 
-# Smoke test local bằng pretrained COCO; không phải model SecondEye 12 lớp
+# Smoke test local bằng YOLO26m pretrained COCO; không phải model SecondEye 15 lớp
 python scripts/fetch_smoke_asset.py
 secondeye-detection demo --source data/samples/ultralytics_bus.jpg
 
-# Nếu dữ liệu đang là ZIP (thư mục đích phải chưa tồn tại hoặc rỗng)
-secondeye-detection prepare \
-  --archive /duong/dan/secondeye_obstacles.zip \
-  --destination data/local/secondeye_obstacles_import
+# Camera iPhone bằng YOLO26m pretrained, không cần train; trên máy hiện tại iPhone là camera 1
+secondeye-detection camera-demo --camera 1
 
-# Dùng đúng dataset root được lệnh prepare in ra
-secondeye-detection validate \
-  --dataset data/local/secondeye_obstacles_import/secondeye_obstacles
+# Tạo lại pilot công khai (pixels/labels vẫn ở data/local và bị Git bỏ qua)
+python scripts/build_openimages_indoor_pilot.py --review-complete
+
+# Kiểm tra pilot 80 ảnh
+secondeye-detection validate --dataset data/local/indoor_pilot_v1
+
+# Kiểm tra dataset public v1.1 đã khóa (276 ảnh/603 bbox)
+secondeye-detection validate --dataset data/local/indoor_dataset_v1_1
+secondeye-validate-manifest data/local/indoor_dataset_v1_1/sample_manifest.csv \
+  --config configs/data_protocol.toml --require-rows
 
 # Train -> evaluate test nếu có, nếu không dùng val -> export/smoke-test ONNX -> package
-secondeye-detection train \
-  --dataset data/local/secondeye_obstacles_import/secondeye_obstacles
+secondeye-detection train --dataset data/local/indoor_dataset_v1_1
 ```
+
+`camera-demo` chỉ nhận 80 lớp COCO và luôn được đánh dấu là demo. Muốn nhận đúng
+15 lớp SecondEye phải dùng checkpoint YOLO26m đã fine-tune với lệnh `camera
+--model ...`; checkpoint YOLO11n cũ không bị ghi đè.
 
 Artifact mỗi lần train được lưu riêng trong `artifacts/object_obstacle/<run_id>/`, gồm
 `best.pt`, `last.pt`, `model.onnx`, `dataset.yaml`, `metrics.json` và `manifest.json`.
-Xem hướng dẫn đầy đủ tại `docs/local_yolo11_pipeline.md`.
+Xem hướng dẫn đầy đủ tại `docs/local_yolo26_pipeline.md`.
+
+## Chính sách dữ liệu indoor v1.1
+
+Dự án không tự chụp ảnh bằng Mac/iPhone và không thu dữ liệu người tham gia.
+`data/local/indoor_dataset_v1_1` chỉ được mở rộng từ dataset công khai có nguồn,
+phiên bản và giấy phép rõ ràng. Ảnh web không rõ quyền không được sử dụng.
+
+Các lớp phổ biến được nhập từ annotation nguồn phù hợp; cửa mở/đóng/kính và cầu
+thang lên/xuống đã được relabel theo từng bbox sau visual review. Nguồn sử dụng là
+Open Images V7 validation/test và ADE20K validation. ADE20K giới hạn ảnh cho nghiên
+cứu/giáo dục phi thương mại, nên model huấn luyện từ bản này không mặc định phù
+hợp để thương mại hóa. Pixels, labels và manifest chi tiết vẫn ở `data/local/`,
+không đưa lên GitHub public. Xem hồ sơ giấy phép tại
+`docs/data/public_dataset_license_review_v1_1.md`.
 
 ## Cấu trúc repository
 

@@ -32,6 +32,17 @@ data/raw/*
 data/annotations/*
 !data/annotations/.gitkeep
 data/local/
+data/datasets/
+data/pilot/
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+data/**/*.webp
+data/**/*.bmp
+data/**/*.tif
+data/**/*.tiff
+data/**/*.mp4
+data/**/*.mov
 data/samples/*.jpg
 data/samples/*.jpeg
 data/samples/*.png

@@ -1,4 +1,4 @@
-"""Local CLI replacing the YOLO11 Colab notebook.
+"""Local YOLO26 CLI evolved from the original YOLO11 Colab notebook.
 
 The commands validate local data, train, evaluate, export a verified ONNX
 artifact, run image inference, and open a private local webcam window.
@@ -182,7 +182,8 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
         "class_count": len(result.names),
         "detections": detections,
         "warning": (
-            "Đây là YOLO11n pretrained COCO; không nhận diện đủ 12 lớp SecondEye "
+            f"Đây là {config.model.base_weights} pretrained COCO; không nhận diện "
+            "đủ 15 lớp SecondEye "
             "và không được dùng làm metric/model vật cản cuối."
         ),
     }
@@ -200,7 +201,7 @@ def command_train(args: argparse.Namespace, config: DetectionPipelineConfig) -> 
     _, torch, yolo_class = require_detection_runtime()
     dataset_root = _dataset_root(args, config)
     stats = validate_dataset(dataset_root, config.class_names)
-    run_id = args.name or _run_id("yolo11n_obstacles")
+    run_id = args.name or _run_id("yolo26m_obstacles")
     staging_yaml = config.paths.runs_root / "dataset_configs" / f"{run_id}.yaml"
     dataset_yaml = write_dataset_yaml(
         dataset_root,
@@ -414,6 +415,61 @@ def command_camera(args: argparse.Namespace, config: DetectionPipelineConfig) ->
         cv2.destroyAllWindows()
 
 
+def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> None:
+    """Run the configured pretrained COCO model on a local camera without training."""
+    cv2, torch, yolo_class = require_detection_runtime()
+    device = select_device(config.model.device, torch)
+    model = yolo_class(config.model.base_weights, task="detect")
+    capture = cv2.VideoCapture(args.camera)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError(
+            f"Không mở được camera {args.camera}. Hãy cấp quyền Camera cho Terminal/Python."
+        )
+    warning = (
+        f"{config.model.base_weights} pretrained chỉ nhận các lớp COCO; "
+        "đây là demo, không phải model SecondEye 15 lớp."
+    )
+    print(f"CẢNH BÁO: {warning}")
+    window_name = "SecondEye YOLO26 COCO demo - q/Esc de thoat"
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                raise RuntimeError("Camera không trả frame hợp lệ")
+            results = model.predict(
+                source=frame,
+                conf=config.model.confidence_threshold,
+                iou=config.model.iou_threshold,
+                imgsz=config.model.image_size,
+                device=device,
+                verbose=False,
+            )
+            if len(results) != 1:
+                raise RuntimeError(f"Demo camera cần một result, nhận {len(results)}")
+            result = results[0]
+            detection_count = 0 if result.boxes is None else len(result.boxes)
+            latency_ms = float(result.speed.get("inference", 0.0))
+            annotated = result.plot()
+            cv2.putText(
+                annotated,
+                f"COCO DEMO | {latency_ms:.1f} ms | detections: {detection_count}",
+                (12, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.imshow(window_name, annotated)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")):
+                break
+    finally:
+        capture.release()
+        cv2.destroyAllWindows()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -430,7 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(handler=command_validate)
 
     demo = subparsers.add_parser(
-        "demo", help="Smoke test YOLO11n pretrained COCO, không phải model 12 lớp"
+        "demo", help="Smoke test YOLO26m pretrained COCO, không phải model 15 lớp"
     )
     demo.add_argument("--source", type=Path, required=True)
     demo.add_argument("--output-json", type=Path)
@@ -466,6 +522,12 @@ def build_parser() -> argparse.ArgumentParser:
     camera.add_argument("--model", type=Path, required=True)
     camera.add_argument("--camera", type=int, default=0)
     camera.set_defaults(handler=command_camera)
+
+    camera_demo = subparsers.add_parser(
+        "camera-demo", help="Mở camera bằng YOLO26m pretrained COCO, không cần train"
+    )
+    camera_demo.add_argument("--camera", type=int, default=0)
+    camera_demo.set_defaults(handler=command_camera_demo)
     return parser
 
 

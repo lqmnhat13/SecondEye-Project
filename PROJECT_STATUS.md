@@ -1,6 +1,6 @@
 # Trạng thái dự án SecondEye
 
-Cập nhật: 2026-08-08  
+Cập nhật: 2026-08-09
 Nguồn yêu cầu: `output/pdf/Cam_nang_KLTN_SecondEye.pdf`, phiên bản 1.1.
 
 ## Quy ước
@@ -11,6 +11,7 @@ Nguồn yêu cầu: `output/pdf/Cam_nang_KLTN_SecondEye.pdf`, phiên bản 1.1.
 | Đang làm | Đang triển khai hoặc cần thêm bằng chứng để đóng |
 | Chưa làm | Chưa bắt đầu |
 | Bị chặn | Không thể quyết định đúng nếu thiếu thông tin/ủy quyền |
+| Ngoài phạm vi | Đã quyết định không thực hiện trong phiên bản hiện tại |
 
 ## Bảng công việc
 
@@ -26,10 +27,10 @@ Nguồn yêu cầu: `output/pdf/Cam_nang_KLTN_SecondEye.pdf`, phiên bản 1.1.
 | 1 | Định dạng trích dẫn theo chuẩn của trường | Bị chặn | Metadata/BibTeX đã có; cần mẫu hoặc tên chuẩn trích dẫn chính thức của trường |
 | 2 | Data card, annotation guide, collection protocol và split | Hoàn thành | `docs/data/`; split 75/25 theo group, scene/video/hash không được chéo split |
 | 2 | Manifest templates và leakage validator | Hoàn thành | `data/templates/`, `configs/data_protocol.toml`; 12 unit test mới đã qua |
-| 2 | Pilot 10-20 mẫu development không có dữ liệu cá nhân | Chưa làm | Chạy pilot, sửa guide rồi mới thu tập chính |
-| 2 | Thu và gán nhãn obstacle/OCR/VQA | Chưa làm | Target lần lượt 200-500, 150-300 và 100-200 ảnh; hiện có 0 mẫu được chấp nhận |
-| 2 | Dữ liệu người tham gia | Bị chặn | Cần data owner, thời hạn lưu, phê duyệt/miễn trừ và consent form dễ tiếp cận |
-| 3 | Detection YOLO11 local | Đang làm | CLI local và smoke test MPS đã chạy; còn thu dataset 12 lớp, train và đánh giá test set độc lập |
+| 2 | Pilot obstacle public không có dữ liệu cá nhân | Hoàn thành | 80 ảnh/212 bbox; 60 development, 20 validation; schema 15 lớp v1, provenance, privacy review và hai validator đều đạt |
+| 2 | Bổ sung và gán nhãn obstacle/OCR/VQA đầy đủ | Đang làm | Obstacle public v1.1 đã khóa: 276 ảnh/603 bbox, đủ 15 lớp, mỗi lớp >=20 bbox, YOLO/manifest validator đạt; OCR/VQA vẫn là 0 |
+| 2 | Dữ liệu người tham gia | Ngoài phạm vi | V1.1 đã chốt chỉ dùng public/synthetic data; không tự chụp và không thu người tham gia |
+| 3 | Detection YOLO26 local | Đang làm | Pipeline mặc định đã chuyển sang YOLO26m; checkpoint YOLO11n cũ được giữ làm baseline; còn benchmark pretrained, fine-tune YOLO26m và đánh giá trên test set độc lập |
 | 3 | OCR baseline | Chưa làm | PaddleOCR tiếng Việt, 20 ảnh development ban đầu |
 | 3 | Depth baseline | Chưa làm | Depth Anything V2 nhỏ, ba vùng gần/trung bình/xa |
 | 3 | VQA baseline | Bị chặn | Cần quyết định local/API dựa trên offline, riêng tư và chi phí |
@@ -42,6 +43,6 @@ Nguồn yêu cầu: `output/pdf/Cam_nang_KLTN_SecondEye.pdf`, phiên bản 1.1.
 
 ## Công việc gần nhất cần tiếp tục
 
-1. Chạy pilot Giai đoạn 2 trên 10-20 ảnh development tự thu, không có dữ liệu cá nhân; hoàn thiện group/manifest/annotation workflow.
-2. Thu dataset 12 lớp, chạy `secondeye-detection validate`, sau đó train và benchmark camera trên chính Mac M1.
-3. Thu tập development OCR tiếng Việt ban đầu; chưa tạo hoặc mở test set cuối.
+1. Benchmark YOLO26m pretrained COCO trên ảnh/camera, sau đó fine-tune trên `data/local/indoor_dataset_v1_1` khi cần đủ schema 15 lớp; lưu checkpoint và metrics có fingerprint dataset.
+2. Chạy benchmark ảnh/camera trên Mac M1; không dùng validation hiện tại để tuyên bố hiệu quả cuối, cần test set độc lập.
+3. Chọn nguồn OCR tiếng Việt công khai hoặc synthetic có provenance; OCR/VQA hiện vẫn là 0.

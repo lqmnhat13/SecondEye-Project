@@ -85,7 +85,7 @@ def ensure_class_schema(
             f"Model có {len(actual)} lớp {actual}; cấu hình cần "
             f"{len(expected_tuple)} lớp {expected_tuple}. "
             "Hãy dùng best.pt đã train với dataset SecondEye, không dùng trực tiếp "
-            "yolo11n.pt pretrained COCO."
+            "yolo26m.pt pretrained COCO."
         )
 
 

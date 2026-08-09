@@ -1,8 +1,9 @@
-# Pipeline YOLO11 chạy local cho SecondEye
+# Pipeline YOLO26 chạy local cho SecondEye
 
-Pipeline này là bản chuyển đổi từ notebook
-`Bản_sao_của_SecondEye_Object_Obstacle_YOLO11_Colab(1).ipynb`. Mã chạy local nằm
-trong `src/secondeye/detection/`; notebook không còn là entry point thực thi.
+Pipeline này phát triển từ notebook
+`Bản_sao_của_SecondEye_Object_Obstacle_YOLO11_Colab(1).ipynb`, nhưng runtime hiện
+dùng YOLO26m. Mã chạy local nằm trong `src/secondeye/detection/`; notebook không
+còn là entry point thực thi.
 
 ## 1. Cài môi trường
 
@@ -16,9 +17,9 @@ python -m pip install --upgrade pip
 python -m pip install ".[dev,detection]"
 ```
 
-Lần chạy đầu, Ultralytics có thể tải `yolo11n.pt`. Train local tự chọn thiết bị theo thứ
+Lần chạy đầu, Ultralytics có thể tải `yolo26m.pt`. Train local tự chọn thiết bị theo thứ
 tự CUDA -> Apple MPS -> CPU. Có thể sửa `model.device` trong
-`configs/yolo11_obstacles.toml` nếu cần ép thiết bị.
+`configs/yolo26_obstacles.toml` nếu cần ép thiết bị.
 
 Có thể smoke test cài đặt ngay, chưa cần dataset:
 
@@ -27,14 +28,24 @@ secondeye-detection demo --source data/samples/ultralytics_bus.jpg
 ```
 
 Lệnh này cố ý ghi `result_type=pretrained_coco_demo_not_second_eye_model`: đây chỉ là
-YOLO11n pretrained COCO 80 lớp, không phải model 12 lớp của SecondEye.
+YOLO26m pretrained COCO 80 lớp, không phải model 15 lớp indoor của SecondEye.
+
+Có thể dùng ngay YOLO26m pretrained với camera mà không train. Trên máy hiện tại,
+camera iPhone Continuity có chỉ số 1:
+
+```bash
+secondeye-detection camera-demo --camera 1
+```
+
+Cửa, cầu thang, tủ và các lớp riêng SecondEye không thuộc đầy đủ vocabulary COCO;
+chế độ này chỉ phục vụ so sánh nhanh, không thay thế checkpoint 15 lớp.
 
 ## 2. Chuẩn bị dataset
 
 Dataset phải có cấu trúc:
 
 ```text
-secondeye_obstacles/
+indoor_dataset_v1_1/
 ├── images/
 │   ├── train/
 │   ├── val/
@@ -67,7 +78,7 @@ có hoặc không có một thư mục bao ngoài.
 
 ```bash
 secondeye-detection validate \
-  --dataset /duong/dan/toi/secondeye_obstacles \
+  --dataset data/local/indoor_dataset_v1_1 \
   --output results/dataset_validation.json
 ```
 
@@ -85,14 +96,14 @@ Validation dừng sớm khi gặp:
 
 ```bash
 secondeye-detection train \
-  --dataset /duong/dan/toi/secondeye_obstacles
+  --dataset data/local/indoor_dataset_v1_1
 ```
 
 Lệnh thực hiện tuần tự:
 
 1. validate toàn bộ dataset;
 2. tạo `dataset.yaml` với đường dẫn tuyệt đối;
-3. fine-tune `yolo11n.pt` theo config;
+3. fine-tune `yolo26m.pt` theo config;
 4. lấy `best.pt` từ thư mục run do Ultralytics thực sự trả về;
 5. đánh giá trên `test` nếu có, nếu không mới dùng `val`;
 6. export ONNX trên CPU, chạy `onnx.checker` và một inference smoke test;
@@ -134,11 +145,11 @@ secondeye-detection evaluate \
   --model artifacts/object_obstacle/<run_id>/best.pt \
   --dataset /duong/dan/toi/secondeye_obstacles \
   --split auto \
-  --output results/yolo11_evaluation.json
+  --output results/yolo26_evaluation.json
 ```
 
 `--split auto` ưu tiên test và chỉ dùng val nếu không có test. Pipeline kiểm tra thứ tự/tên
-12 lớp trong checkpoint; `yolo11n.pt` pretrained COCO 80 lớp sẽ bị từ chối thay vì âm thầm
+15 lớp trong checkpoint; `yolo26m.pt` pretrained COCO 80 lớp sẽ bị từ chối thay vì âm thầm
 đánh giá sai class ID.
 
 ## 6. Predict ảnh và webcam local
@@ -158,6 +169,9 @@ secondeye-detection camera \
   --model artifacts/object_obstacle/<run_id>/best.pt \
   --camera 0
 ```
+
+Lệnh `camera` ở đây kiểm tra checkpoint phải đúng schema 15 lớp SecondEye. Dùng
+`camera-demo` nếu muốn chạy trực tiếp YOLO26m pretrained mà chưa fine-tune.
 
 Nhấn `q` hoặc `Esc` để thoát. macOS có thể yêu cầu cấp quyền Camera cho Terminal hoặc
 ứng dụng Python đang chạy.

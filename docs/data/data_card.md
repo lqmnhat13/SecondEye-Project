@@ -1,8 +1,9 @@
 # Data card - SecondEye MVP
 
-Phiên bản: 0.1.0  
-Cập nhật: 2026-08-04  
-Trạng thái: **pre-collection**; số mẫu đã thu/được chấp nhận: **0**.
+Phiên bản: 1.1.0
+Cập nhật: 2026-08-09
+Trạng thái: **obstacle public v1.1 đã khóa**; **276 ảnh, 603 bbox**, đủ 15/15
+lớp và mỗi lớp có ít nhất 20 bbox. Dự án không tự chụp ảnh; OCR/VQA vẫn là **0**.
 
 ## 1. Tóm tắt
 
@@ -10,11 +11,18 @@ SecondEye dự kiến tạo ba tập đánh giá nhỏ cho nguyên mẫu hỗ tr
 
 | Thành phần | Quy mô dự kiến | Đơn vị | Mục đích chính |
 |---|---:|---|---|
-| Obstacle | 200–500 | ảnh hoặc frame đã chọn | RQ1, detection/risk và failure analysis |
+| Obstacle | tối thiểu 250 | ảnh hoặc frame đã chọn | RQ1, detection/risk và failure analysis |
 | OCR tiếng Việt | 150–300 | ảnh | RQ2, CER/WER và task success |
 | VQA/scene | 100–200 | ảnh, 2–3 câu hỏi/ảnh | RQ2–RQ3, answerability và hallucination |
 
-Các con số trên là target thiết kế, không phải dữ liệu đã có. Tập này phục vụ nghiên cứu có kiểm soát trên Mac M1; không chứng minh an toàn ngoài đường hoặc khả năng điều hướng độc lập.
+Dataset obstacle v1.1 có 207 ảnh train và 69 ảnh validation, kế thừa pilot 80
+ảnh và bổ sung 196 ảnh đã review từ Open Images V7 validation/test và ADE20K
+validation. Đây là tập development để fine-tune/so sánh cấu hình; chưa phải test
+set độc lập chứng minh hiệu quả cuối hay an toàn điều hướng.
+
+Quy mô OCR/VQA trong bảng vẫn là target thiết kế; quy mô obstacle là dữ liệu đã
+có. Tập obstacle phục vụ nghiên cứu có kiểm soát trên Mac M1; không chứng minh
+an toàn ngoài đường hoặc khả năng điều hướng độc lập.
 
 ## 2. Động cơ và RQ
 
@@ -29,7 +37,7 @@ Data card này áp dụng cách tài liệu hóa motivation, composition, collec
 ### Phù hợp
 
 - Development: sửa code, chọn ngưỡng, prompt và tiền xử lý.
-- Test khóa: báo cáo kết quả cuối, ablation và failure cases.
+- Validation khóa: so sánh cấu hình trong giai đoạn phát triển và failure cases.
 - Demo có kiểm soát trong nhà, người vận hành đứng yên hoặc có giám sát.
 
 ### Không phù hợp
@@ -66,10 +74,12 @@ Một dòng trong `sample_manifest.csv` là một cặp **asset–task**. Cùng 
 
 | Nguồn | Trạng thái | Điều kiện nhập tập |
 |---|---|---|
-| Tự thu trong môi trường an toàn | Cho phép sau pilot | Không có người nhận dạng được hoặc đã xử lý quyền phù hợp |
-| Dataset công khai | Cho phép từng nguồn | Lưu URL, phiên bản, giấy phép và điều kiện phái sinh |
+| Tự thu trong môi trường an toàn | Không dùng trong v1.1 | Quyết định phạm vi ngày 2026-08-09: bỏ hoàn toàn ảnh tự chụp |
+| Open Images V7 validation/test pixels + verified boxes | Đã dùng | Chỉ nhận ảnh có metadata CC BY 2.0; giữ author, landing URL, license, hash; bbox/relabel annotation theo CC BY 4.0 |
+| ADE20K validation | Đã dùng | Semantic class 43 cho `column`, các class stair cho bổ sung `stairs_down`; ảnh chỉ cho nghiên cứu/giáo dục phi thương mại, annotation BSD-3-Clause |
+| Dataset công khai khác | Chưa dùng | Lưu URL, phiên bản, giấy phép và điều kiện phái sinh trước khi nhập version mới |
 | Dữ liệu tổng hợp | Cho phép có đánh dấu | Không thay thế đánh giá trên ảnh camera thật |
-| Người tham gia | Đang khóa | Chỉ sau phê duyệt/miễn trừ và đồng thuận phù hợp |
+| Người tham gia | Không dùng trong v1.1 | Quyết định phạm vi: public/synthetic data only |
 
 Không gộp ảnh lấy tùy ý từ Internet. Mỗi asset phải có `source_origin` và `license` hoặc điều kiện sử dụng cụ thể.
 
@@ -77,7 +87,7 @@ Không gộp ảnh lấy tùy ý từ Internet. Mỗi asset phải có `source_o
 
 Mục tiêu không phải cân bằng nhân khẩu học vì dự án không thu nhãn nhân khẩu học nếu không cần thiết. Coverage tập trung vào điều kiện tác vụ:
 
-- Camera: FaceTime HD và iPhone/Continuity Camera nếu được dùng trong demo.
+- Camera: metadata thiết bị nguồn có thể thiếu; không tuyên bố đại diện camera Mac/iPhone đích.
 - Ánh sáng: đủ sáng, thiếu sáng trong nhà, ngược sáng.
 - Góc/độ khó: chính diện, xiên, rung/mờ, che khuất.
 - Obstacle: trái/giữa/phải; gần/trung bình/xa/không xác định; lớp COCO và vật cản ngoài COCO.
@@ -88,7 +98,7 @@ Các lát cắt thực tế sẽ được báo cáo từ manifest sau thu thập
 
 ## 7. Gán nhãn và đảm bảo chất lượng
 
-- Guide được pilot trên 10–20 mẫu development trước khi thu tập chính.
+- Guide được pilot trên 10–20 mẫu development trước khi nhập batch public lớn.
 - Tất cả nhãn test và nhãn an toàn/hazard phải có reviewer độc lập hoặc adjudication được ghi lại.
 - VQA test: reviewer kiểm tra answerability, reference answer và hallucination trap.
 - OCR test: reviewer đối chiếu transcript với ảnh gốc ở mức phóng đại phù hợp.
@@ -97,9 +107,10 @@ Các lát cắt thực tế sẽ được báo cáo từ manifest sau thu thập
 
 ## 8. Split và leakage
 
-- Split mặc định: 75% development, 25% test theo **group**, không theo dòng/ảnh.
+- Split obstacle v1.1: 75% train, 25% validation theo **group**, không theo dòng/ảnh.
 - Toàn bộ cùng scene, burst, video, near-duplicate hoặc cùng asset qua nhiều tác vụ phải ở cùng split.
-- Nếu fine-tune về sau, train/validation chỉ được tạo bên trong development; test không thay đổi.
+- Validation hiện tại dùng để chọn cấu hình; cần tạo test độc lập trước khi báo cáo
+  kết quả cuối của khóa luận.
 - Manifest test được khóa bằng hash trước thí nghiệm cuối.
 
 Chi tiết tại `split_protocol.md`; validator trong `src/secondeye/data/protocol.py` bắt lỗi group/scene/video/hash chéo split.
@@ -111,7 +122,7 @@ Chi tiết tại `split_protocol.md`; validator trong `src/secondeye/data/protoc
 - Dữ liệu `pending`/`withdrawn` chỉ ở `quarantine`; dữ liệu người tham gia yêu cầu `approved` trước khi dùng.
 - Người tham gia có thể dừng mà không cần giải thích; quy trình rút đồng thuận phải ánh xạ từ mã giả danh sang asset để xóa.
 - Không yêu cầu người sáng mắt bịt mắt để mô phỏng trải nghiệm người mù; không thu cảnh đi bộ ngoài đường trong MVP.
-- Thời hạn lưu trữ, data controller và người nhận yêu cầu xóa: **TBD trước khi thu dữ liệu người tham gia**.
+- Không thu dữ liệu người tham gia trong v1.1; mọi mở rộng tương lai cần protocol và phê duyệt riêng.
 
 Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15 có hiệu lực từ 2026-01-01 theo [Cổng thông tin Chính phủ](https://vanban.chinhphu.vn/?classid=1&docid=214590&pageid=27160&typegroup=). Việc áp dụng cụ thể phải được xác nhận với nhà trường/người phụ trách; tài liệu này không phải tư vấn pháp lý.
 
@@ -130,12 +141,21 @@ Luật Bảo vệ dữ liệu cá nhân 91/2025/QH15 có hiệu lực từ 2026-
 - Nhãn hazard phụ thuộc ngữ cảnh; inter-rater agreement có thể thấp.
 - Khoảng cách từ ảnh đơn không có hiệu chuẩn chỉ là band tương đối.
 - OCR/VQA tiếng Việt có thể không đại diện vùng miền, chữ viết tay hoặc tài liệu phức tạp.
-- Dữ liệu do nhóm tự thu không đại diện đầy đủ cách người khiếm thị cầm/chụp camera.
+- Không có ảnh từ camera triển khai đích, vì vậy metric public không chứng minh khả năng tổng quát trên camera Mac/iPhone hoặc trong nhà/trường học thực tế.
+- Dataset public có thể khác góc nhìn, độ phân giải, ánh sáng và phân bố cảnh của người dùng mục tiêu.
 
 ## 12. Trường còn phải điền
 
 - Data owner/controller: **TBD**.
 - Ngày kết thúc dự án và thời hạn lưu trữ: **TBD**.
 - Mẫu consent dễ tiếp cận và kênh rút đồng thuận: **TBD**.
-- Danh sách dataset công khai/giấy phép thực dùng: **chưa có**.
-- Số mẫu thu, loại, loại bỏ, phân bố và agreement: **chưa chạy**.
+- Pilot obstacle: **80 ảnh/212 bbox; 60 development, 20 validation; 17 ảnh bị loại thủ công vì người/ngoài trời/sản phẩm rời và các ứng viên mờ bị loại tự động**.
+- Dataset công khai thực dùng: **Open Images V7 validation/test pixels, V5 bbox;
+  ADE20K Scene Parsing validation**. Điều kiện chi tiết tại
+  `public_dataset_license_review_v1_1.md`.
+- Obstacle v1.1: **276 ảnh/603 bbox; 207 train, 69 validation; 15/15 lớp, mọi
+  lớp >=20 bbox; manifest SHA-256
+  `600d8e9c4be184485cebac1685185ad8d97407ae7d6050d8a2140bf47aa3fb32`**.
+- Agreement hai annotator: **chưa chạy**; bbox nguồn đã verified và các lớp
+  SecondEye đặc thù đã có một lượt visual review, nhưng chưa có reviewer độc lập
+  thứ hai. Không được mô tả đây là double annotation.
