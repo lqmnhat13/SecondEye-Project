@@ -87,6 +87,12 @@ secondeye-detection train --dataset data/local/indoor_dataset_v1_1
 15 lớp SecondEye phải dùng checkpoint YOLO26m đã fine-tune với lệnh `camera
 --model ...`; checkpoint YOLO11n cũ không bị ghi đè.
 
+YOLO26m pretrained được lọc bằng confidence đã calibration trên validation:
+`person=0.29`, `chair=0.69`, `table_desk=0.28`, `sofa=0.31`, `bed=0.48`,
+`backpack_bag=0.17`. Adapter chỉ xuất sáu lớp có mapping rõ ràng; nhãn COCO khác
+bị loại và không được dùng để đoán lớp SecondEye. Chi tiết và giới hạn của kết
+quả nằm tại `docs/benchmarks/yolo26m_confidence_calibration.md`.
+
 Artifact mỗi lần train được lưu riêng trong `artifacts/object_obstacle/<run_id>/`, gồm
 `best.pt`, `last.pt`, `model.onnx`, `dataset.yaml`, `metrics.json` và `manifest.json`.
 Xem hướng dẫn đầy đủ tại `docs/local_yolo26_pipeline.md`.

@@ -1,8 +1,44 @@
+from types import SimpleNamespace
+
 import pytest
 
 from secondeye.detection.config import load_detection_config
-from secondeye.detection.pipeline import build_parser
+from secondeye.detection.pipeline import (
+    _adapt_coco_result_to_second_eye,
+    _pretrained_inference_floor,
+    build_parser,
+)
 from secondeye.detection.runtime import ensure_class_schema
+
+
+class _Scalar:
+    def __init__(self, value):
+        self.value = value
+
+    def item(self):
+        return self.value
+
+
+class _Box:
+    def __init__(self, class_id: int, confidence: float):
+        self.cls = _Scalar(class_id)
+        self.conf = _Scalar(confidence)
+
+
+class _Boxes:
+    def __init__(self, boxes):
+        self.values = list(boxes)
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def __len__(self):
+        return len(self.values)
+
+    def __getitem__(self, indices):
+        if isinstance(indices, list):
+            return _Boxes(self.values[index] for index in indices)
+        return self.values[indices]
 
 
 def test_default_yolo26_config_has_expected_second_eye_schema():
@@ -19,6 +55,27 @@ def test_default_yolo26_config_has_expected_second_eye_schema():
         "stairs_down",
     )
     assert config.candidate_classes <= set(config.class_names)
+    assert config.pretrained_coco.global_confidence_threshold == pytest.approx(0.41)
+    assert dict(config.pretrained_coco.class_thresholds) == {
+        "person": 0.29,
+        "chair": 0.69,
+        "table_desk": 0.28,
+        "sofa": 0.31,
+        "bed": 0.48,
+        "backpack_bag": 0.17,
+    }
+    assert dict(config.pretrained_coco.class_mapping)["dining table"] == "table_desk"
+    assert config.pretrained_coco.unsupported_second_eye_classes == (
+        "cabinet",
+        "doorway_open",
+        "door_closed",
+        "glass_door",
+        "stairs_up",
+        "stairs_down",
+        "box",
+        "trash_bin",
+        "column",
+    )
 
 
 def test_camera_demo_uses_configured_yolo26_without_model_argument():
@@ -27,6 +84,33 @@ def test_camera_demo_uses_configured_yolo26_without_model_argument():
     assert args.command == "camera-demo"
     assert args.camera == 1
     assert not hasattr(args, "model")
+
+
+def test_pretrained_coco_filter_maps_only_supported_classes():
+    config = load_detection_config()
+    result = SimpleNamespace(
+        names={0: "person", 1: "chair", 2: "dining table", 3: "bus"},
+        boxes=_Boxes(
+            (
+                _Box(0, 0.29),
+                _Box(0, 0.28),
+                _Box(1, 0.68),
+                _Box(1, 0.70),
+                _Box(2, 0.30),
+                _Box(3, 0.99),
+            )
+        ),
+    )
+
+    filtered = _adapt_coco_result_to_second_eye(result, config)
+
+    assert _pretrained_inference_floor(config) == pytest.approx(0.17)
+    assert [(box.cls.item(), box.conf.item()) for box in filtered.boxes] == [
+        (0, 0.29),
+        (1, 0.70),
+        (2, 0.30),
+    ]
+    assert filtered.names[2] == "table_desk"
 
 
 def test_schema_guard_rejects_pretrained_coco_mapping():

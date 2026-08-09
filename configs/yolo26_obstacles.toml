@@ -5,6 +5,39 @@ confidence_threshold = 0.35
 iou_threshold = 0.50
 device = "auto"
 
+[pretrained_coco]
+global_confidence_threshold = 0.41
+optimization_objective = "micro_f1_iou50"
+benchmark_images = 69
+benchmark_boxes = 68
+unsupported_second_eye_classes = [
+  "cabinet",
+  "doorway_open",
+  "door_closed",
+  "glass_door",
+  "stairs_up",
+  "stairs_down",
+  "box",
+  "trash_bin",
+  "column",
+]
+
+[pretrained_coco.class_mapping]
+person = "person"
+chair = "chair"
+"dining table" = "table_desk"
+couch = "sofa"
+bed = "bed"
+backpack = "backpack_bag"
+
+[pretrained_coco.class_thresholds]
+person = 0.29
+chair = 0.69
+table_desk = 0.28
+sofa = 0.31
+bed = 0.48
+backpack_bag = 0.17
+
 [training]
 epochs = 80
 batch_size = 4

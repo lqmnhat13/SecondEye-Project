@@ -37,6 +37,31 @@ camera iPhone Continuity có chỉ số 1:
 secondeye-detection camera-demo --camera 1
 ```
 
+`camera-demo` tự áp dụng confidence theo lớp đã calibration trên validation:
+`person=0.29`, `chair=0.69`, `table_desk=0.28`, `sofa=0.31`, `bed=0.48`,
+`backpack_bag=0.17`. Adapter chỉ xuất các lớp có mapping rõ ràng; mọi nhãn COCO
+khác bị loại và không được đổi tên gần đúng hay dùng để suy đoán lớp SecondEye.
+Đây là cấu hình riêng cho YOLO26m pretrained. Checkpoint SecondEye đã fine-tune
+tiếp tục dùng ngưỡng `model.confidence_threshold=0.35` cho đến khi được
+calibration độc lập.
+
+Các lớp SecondEye chưa được COCO adapter hỗ trợ là: `cabinet`, `doorway_open`,
+`door_closed`, `glass_door`, `stairs_up`, `stairs_down`, `box`, `trash_bin` và
+`column`. Muốn nhận diện các lớp này phải dùng checkpoint 15 lớp đã fine-tune;
+adapter tuyệt đối không giả lập kết quả từ một lớp COCO khác.
+
+| YOLO26 COCO | SecondEye | Trạng thái |
+|---|---|---|
+| `person` | `person` | Hỗ trợ |
+| `chair` | `chair` | Hỗ trợ |
+| `dining table` | `table_desk` | Hỗ trợ |
+| `couch` | `sofa` | Hỗ trợ |
+| `bed` | `bed` | Hỗ trợ |
+| `backpack` | `backpack_bag` | Hỗ trợ |
+
+Trong JSON demo, `class_id` là ID chuẩn của schema SecondEye; `source_class_id`
+là ID gốc COCO phục vụ truy vết. Hai loại ID không được dùng thay thế nhau.
+
 Cửa, cầu thang, tủ và các lớp riêng SecondEye không thuộc đầy đủ vocabulary COCO;
 chế độ này chỉ phục vụ so sánh nhanh, không thay thế checkpoint 15 lớp.
 

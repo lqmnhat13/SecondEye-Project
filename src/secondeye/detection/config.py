@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import tomllib
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +43,17 @@ class ModelConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PretrainedCocoConfig:
+    global_confidence_threshold: float
+    optimization_objective: str
+    benchmark_images: int
+    benchmark_boxes: int
+    unsupported_second_eye_classes: tuple[str, ...]
+    class_mapping: tuple[tuple[str, str], ...]
+    class_thresholds: tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TrainingConfig:
     epochs: int
     batch_size: int
@@ -71,6 +82,7 @@ class PathConfig:
 class DetectionPipelineConfig:
     source_path: Path
     model: ModelConfig
+    pretrained_coco: PretrainedCocoConfig
     training: TrainingConfig
     export: ExportConfig
     paths: PathConfig
@@ -105,6 +117,7 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
         raw = tomllib.load(stream)
 
     model_raw = _require_table(raw, "model")
+    pretrained_raw = _require_table(raw, "pretrained_coco")
     training_raw = _require_table(raw, "training")
     export_raw = _require_table(raw, "export")
     paths_raw = _require_table(raw, "paths")
@@ -144,6 +157,56 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
     if model.image_size <= 0:
         raise ValueError("model.image_size phải dương")
 
+    mapping_raw = pretrained_raw.get("class_mapping", {})
+    thresholds_raw = pretrained_raw.get("class_thresholds", {})
+    if not isinstance(mapping_raw, dict) or not isinstance(thresholds_raw, dict):
+        raise ValueError("pretrained_coco mapping/thresholds phải là TOML table")
+    class_mapping = tuple(
+        (str(source).strip(), str(target).strip())
+        for source, target in mapping_raw.items()
+    )
+    if any(not source or target not in class_names for source, target in class_mapping):
+        raise ValueError("pretrained_coco.class_mapping chứa lớp rỗng/ngoài schema")
+    mapped_classes = tuple(target for _, target in class_mapping)
+    if len(mapped_classes) != len(set(mapped_classes)):
+        raise ValueError("pretrained_coco.class_mapping không được ánh xạ trùng lớp đích")
+    unsupported_classes = tuple(
+        str(name).strip()
+        for name in pretrained_raw.get("unsupported_second_eye_classes", ())
+    )
+    if len(unsupported_classes) != len(set(unsupported_classes)):
+        raise ValueError("pretrained_coco.unsupported_second_eye_classes bị trùng")
+    expected_unsupported = set(class_names) - set(mapped_classes)
+    if set(unsupported_classes) != expected_unsupported:
+        raise ValueError(
+            "pretrained_coco.unsupported_second_eye_classes phải đúng bằng các lớp "
+            "SecondEye chưa có ánh xạ COCO"
+        )
+    class_thresholds = tuple(
+        (str(name).strip(), _probability(value, f"pretrained_coco.{name}"))
+        for name, value in thresholds_raw.items()
+    )
+    if any(name not in class_names for name, _ in class_thresholds):
+        raise ValueError("pretrained_coco.class_thresholds chứa lớp ngoài schema")
+    if {name for name, _ in class_thresholds} != set(mapped_classes):
+        raise ValueError(
+            "pretrained_coco.class_thresholds phải bao phủ đúng các lớp đã ánh xạ"
+        )
+    pretrained_coco = PretrainedCocoConfig(
+        global_confidence_threshold=_probability(
+            pretrained_raw["global_confidence_threshold"],
+            "pretrained_coco.global_confidence_threshold",
+        ),
+        optimization_objective=str(pretrained_raw["optimization_objective"]),
+        benchmark_images=int(pretrained_raw["benchmark_images"]),
+        benchmark_boxes=int(pretrained_raw["benchmark_boxes"]),
+        unsupported_second_eye_classes=unsupported_classes,
+        class_mapping=class_mapping,
+        class_thresholds=class_thresholds,
+    )
+    if pretrained_coco.benchmark_images <= 0 or pretrained_coco.benchmark_boxes <= 0:
+        raise ValueError("pretrained_coco benchmark counts phải dương")
+
     training = TrainingConfig(
         epochs=int(training_raw["epochs"]),
         batch_size=int(training_raw["batch_size"]),
@@ -175,6 +238,7 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
     return DetectionPipelineConfig(
         source_path=resolved_path,
         model=model,
+        pretrained_coco=pretrained_coco,
         training=training,
         export=export,
         paths=PathConfig(

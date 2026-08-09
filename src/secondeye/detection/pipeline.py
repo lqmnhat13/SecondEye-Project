@@ -51,6 +51,7 @@ def _config_snapshot(config: DetectionPipelineConfig) -> dict[str, object]:
         "source": str(config.source_path),
         "sha256": file_sha256(config.source_path),
         "model": asdict(config.model),
+        "pretrained_coco": asdict(config.pretrained_coco),
         "training": asdict(config.training),
         "export": asdict(config.export),
         "paths": {name: str(value) for name, value in asdict(config.paths).items()},
@@ -72,6 +73,38 @@ def _metric_summary(metrics: Any, split: str) -> dict[str, object]:
         "per_class_mAP50_95": [float(value) for value in box.maps],
         "save_dir": str(metrics.save_dir),
     }
+
+
+def _adapt_coco_result_to_second_eye(
+    result: Any, config: DetectionPipelineConfig
+) -> Any:
+    """Keep explicit COCO mappings only; never infer unsupported SecondEye classes."""
+    if result.boxes is None:
+        return result
+    mapping = dict(config.pretrained_coco.class_mapping)
+    thresholds = dict(config.pretrained_coco.class_thresholds)
+    display_names = dict(result.names)
+    keep: list[int] = []
+    for index, box in enumerate(result.boxes):
+        class_id = int(box.cls.item())
+        source_label = str(result.names[class_id])
+        canonical_label = mapping.get(source_label)
+        if canonical_label is None:
+            continue
+        threshold = thresholds[canonical_label]
+        if float(box.conf.item()) >= threshold:
+            keep.append(index)
+        display_names[class_id] = canonical_label
+    result.boxes = result.boxes[keep]
+    result.names = display_names
+    return result
+
+
+def _pretrained_inference_floor(config: DetectionPipelineConfig) -> float:
+    thresholds = [
+        *(value for _, value in config.pretrained_coco.class_thresholds),
+    ]
+    return min(thresholds)
 
 
 def _verify_onnx(path: Path, config: DetectionPipelineConfig) -> None:
@@ -151,7 +184,7 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
     model = yolo_class(config.model.base_weights)
     results = model.predict(
         source=image,
-        conf=config.model.confidence_threshold,
+        conf=_pretrained_inference_floor(config),
         iou=config.model.iou_threshold,
         imgsz=config.model.image_size,
         device=device,
@@ -159,15 +192,18 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
     )
     if len(results) != 1:
         raise RuntimeError(f"Demo cần một result, nhận {len(results)}")
-    result = results[0]
+    result = _adapt_coco_result_to_second_eye(results[0], config)
     detections = []
+    canonical_ids = {name: index for index, name in enumerate(config.class_names)}
     if result.boxes is not None:
         for box in result.boxes:
-            class_id = int(box.cls.item())
+            source_class_id = int(box.cls.item())
+            label = str(result.names[source_class_id])
             detections.append(
                 {
-                    "class_id": class_id,
-                    "label": str(result.names[class_id]),
+                    "class_id": canonical_ids[label],
+                    "source_class_id": source_class_id,
+                    "label": label,
                     "confidence": round(float(box.conf.item()), 4),
                     "bbox_xyxy": [
                         round(float(value), 2) for value in box.xyxy[0].cpu().tolist()
@@ -179,12 +215,18 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
         "result_type": "pretrained_coco_demo_not_second_eye_model",
         "model": config.model.base_weights,
         "device": device,
-        "class_count": len(result.names),
+        "source_class_count": len(result.names),
+        "supported_second_eye_classes": [
+            target for _, target in config.pretrained_coco.class_mapping
+        ],
+        "unsupported_second_eye_classes": list(
+            config.pretrained_coco.unsupported_second_eye_classes
+        ),
         "detections": detections,
         "warning": (
-            f"Đây là {config.model.base_weights} pretrained COCO; không nhận diện "
-            "đủ 15 lớp SecondEye "
-            "và không được dùng làm metric/model vật cản cuối."
+            f"Đây là {config.model.base_weights} pretrained COCO; adapter chỉ hỗ trợ "
+            f"{len(config.pretrained_coco.class_mapping)}/15 lớp SecondEye. "
+            "Các lớp chưa hỗ trợ không được giả lập hoặc suy đoán."
         ),
     }
     if args.output_json:
@@ -427,10 +469,15 @@ def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfi
             f"Không mở được camera {args.camera}. Hãy cấp quyền Camera cho Terminal/Python."
         )
     warning = (
-        f"{config.model.base_weights} pretrained chỉ nhận các lớp COCO; "
-        "đây là demo, không phải model SecondEye 15 lớp."
+        f"{config.model.base_weights} pretrained chỉ ánh xạ "
+        f"{len(config.pretrained_coco.class_mapping)}/15 lớp SecondEye; "
+        "các lớp còn lại không được giả lập hoặc suy đoán."
     )
     print(f"CẢNH BÁO: {warning}")
+    print(
+        "CHƯA HỖ TRỢ: "
+        + ", ".join(config.pretrained_coco.unsupported_second_eye_classes)
+    )
     window_name = "SecondEye YOLO26 COCO demo - q/Esc de thoat"
     try:
         while True:
@@ -439,7 +486,7 @@ def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfi
                 raise RuntimeError("Camera không trả frame hợp lệ")
             results = model.predict(
                 source=frame,
-                conf=config.model.confidence_threshold,
+                conf=_pretrained_inference_floor(config),
                 iou=config.model.iou_threshold,
                 imgsz=config.model.image_size,
                 device=device,
@@ -447,7 +494,7 @@ def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfi
             )
             if len(results) != 1:
                 raise RuntimeError(f"Demo camera cần một result, nhận {len(results)}")
-            result = results[0]
+            result = _adapt_coco_result_to_second_eye(results[0], config)
             detection_count = 0 if result.boxes is None else len(result.boxes)
             latency_ms = float(result.speed.get("inference", 0.0))
             annotated = result.plot()
