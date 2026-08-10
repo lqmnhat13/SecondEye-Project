@@ -1,140 +1,158 @@
 # SecondEye
 
-SecondEye là nguyên mẫu nghiên cứu đa phương thức hỗ trợ người khiếm thị nhận thức môi trường. MVP được khóa ở ba kịch bản: cảnh báo vật cản, đọc văn bản tiếng Việt và hiểu/hỏi đáp về cảnh.
+SecondEye là baseline tích hợp AI đa phương thức chạy local trên macOS. Phiên bản
+hiện tại **không fine-tune**: hệ thống ghép các model pretrained cho detection,
+relative depth, OCR, VQA, STT và TTS để hoàn thiện kiến trúc end-to-end trước.
 
-> **Cảnh báo an toàn:** SecondEye chỉ là công cụ hỗ trợ nghiên cứu. Hệ thống không thay thế gậy trắng, chó dẫn đường hoặc thiết bị điều hướng chuyên dụng; không được dùng để tự điều hướng ngoài đường hay trong tình huống nguy hiểm.
+> **Cảnh báo an toàn:** Đây là prototype nghiên cứu, không phải thiết bị điều
+> hướng đã kiểm định và không thay thế gậy trắng, chó dẫn đường hoặc thiết bị hỗ
+> trợ chuyên dụng.
 
-## Trạng thái
+## Runtime hiện tại
 
-- Giai đoạn 0: bản nháp phạm vi, Charter, kế hoạch 10 tuần và checklist bảo vệ đã có.
-- Giai đoạn 1: đã xác minh 20 nguồn, hoàn thành literature matrix, BibTeX và bản tổng hợp research gap; chuẩn trích dẫn của trường còn cần xác nhận.
-- Giai đoạn 2: schema indoor v1 gồm 15 lớp đã khóa; dataset public v1.1 tại
-  `data/local/indoor_dataset_v1_1` có **276 ảnh/603 bbox**, phủ đủ 15 lớp và mỗi
-  lớp có ít nhất 20 bbox. YOLO validator, manifest audit và visual/privacy review
-  đều đã qua. Dự án không tự chụp và không đưa dataset lên Git public.
-- Pipeline hiện dùng YOLO26m và được chuyển từ notebook YOLO11 thành CLI chạy local: validate dữ liệu,
-  train, đánh giá val/test, kiểm tra ONNX, predict ảnh và webcam. Chưa có checkpoint
-  15 lớp vì bước fine-tune/evaluate chưa chạy trên dataset v1.1 vừa khóa.
-- OCR, depth, VQA, speech và demo end-to-end: chưa triển khai.
+```text
+Camera Mac/iPhone
+    -> YOLO26m COCO detection
+    -> Depth Anything V2 Small (tùy chọn)
+    -> risk fusion + cooldown
+    -> macOS TTS
 
-Theo dõi chi tiết tại [PROJECT_STATUS.md](PROJECT_STATUS.md). Nguồn yêu cầu chính là `output/pdf/Cam_nang_KLTN_SecondEye.pdf`.
-
-## Kiến trúc đích
-
-- **Luồng an toàn chạy thường xuyên:** camera -> detection -> depth -> đánh giá nguy cơ -> cảnh báo ngắn.
-- **Luồng ngữ nghĩa theo yêu cầu:** ảnh + lệnh -> OCR hoặc VQA/mô tả cảnh -> phản hồi.
-- **Một bộ điều phối âm thanh:** ưu tiên, cooldown, timeout và giải quyết xung đột cho toàn bộ TTS.
-
-## Thiết lập tái lập
-
-Yêu cầu đã kiểm tra: Python 3.11 trên macOS Apple Silicon. Các nền tảng khác là dự kiến cho đến khi được chạy kiểm chứng.
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install ".[dev,detection]"
+Ảnh theo yêu cầu -> PaddleOCR hoặc BLIP VQA -> TTS
+Audio đã ghi     -> Whisper STT
 ```
 
-Sau khi sửa mã nguồn, chạy lại `python -m pip install ".[dev,detection]"` trước khi dùng
-console script để bản wheel trong `.venv` được cập nhật.
+Detection dùng schema `indoor_coco_baseline_v1` gồm 15 lớp COCO có ánh xạ trực
+tiếp:
 
-Chạy unit test không cần tải model:
+```text
+person, chair, table, sofa, bed,
+backpack, handbag, suitcase, bottle, potted_plant,
+tv, laptop, toilet, sink, refrigerator
+```
+
+Schema này cố ý không tuyên bố hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng
+rác. Các lớp an toàn đặc thù được bảo tồn local cho giai đoạn fine-tuning sau.
+
+## Cài đặt
+
+Yêu cầu: Python 3.11 trên macOS Apple Silicon.
 
 ```bash
+cd /Users/lenhat/Documents/SecondEye-Project
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+
+# Detection, camera và test
+python -m pip install -e ".[dev,detection]"
+
+# Depth, VQA và Whisper STT
+python -m pip install -e ".[multimodal]"
+
+# OCR cài riêng vì PaddlePaddle là dependency lớn
+python -m pip install -e ".[ocr]"
+```
+
+Model pretrained được tải vào cache ở lần chạy đầu. Sau khi đã tải đủ model,
+các module local có thể chạy không cần gửi ảnh lên API.
+
+## Kiểm tra môi trường
+
+```bash
+secondeye doctor
 pytest
 ```
 
-Kiểm tra schema, consent state và leakage trong manifest dữ liệu:
+`doctor` chỉ kiểm tra dependency, không tải model.
+
+## Chạy camera Mac hoặc iPhone
+
+Camera Mac thường là `0`:
 
 ```bash
-secondeye-validate-manifest data/local/sample_manifest.csv \
-  --config configs/data_protocol.toml --require-rows
+secondeye camera --camera 0 --no-tts
 ```
 
-## Pipeline YOLO26 chạy local
-
-Notebook Colab cũ đã được thay bằng lệnh `secondeye-detection`; không còn Google Drive,
-JavaScript camera, shell magic hay URL Gradio công khai. Pipeline hiện dùng
-`yolo26m.pt`; cấu hình mặc định nằm tại `configs/yolo26_obstacles.toml`.
+Sau khi bật Continuity Camera, iPhone thường là `1`; chỉ số thực tế phụ thuộc
+thiết bị đang kết nối:
 
 ```bash
-python -m pip install ".[dev,detection]"
+secondeye camera --camera 1 --depth
+```
 
-# Smoke test local bằng YOLO26m pretrained COCO; không phải model SecondEye 15 lớp
+Nhấn `q` hoặc `Esc` để thoát, `x` để dừng âm thanh. Khi không bật `--depth`,
+detection chỉ hiển thị ứng viên và không phát cảnh báo “ở gần”.
+
+## Chạy các module trên một ảnh
+
+```bash
+# Detection pretrained
+secondeye image --source /duong/dan/anh.jpg --no-tts
+
+# Detection + relative depth
+secondeye image --source /duong/dan/anh.jpg --depth --no-tts
+
+# OCR tiếng Việt
+secondeye image --source /duong/dan/anh.jpg --ocr
+
+# VQA local; câu trả lời không được dùng làm chỉ dẫn điều hướng
+secondeye image \
+  --source /duong/dan/anh.jpg \
+  --question "What objects are in front of me?"
+
+# Lưu unified JSON log
+secondeye image \
+  --source /duong/dan/anh.jpg \
+  --depth --ocr --no-tts \
+  --output results/session.json
+```
+
+STT một file âm thanh đã ghi:
+
+```bash
+secondeye transcribe --audio /duong/dan/lenh.wav
+```
+
+CLI detection cũ vẫn tồn tại cho smoke test và nghiên cứu:
+
+```bash
 python scripts/fetch_smoke_asset.py
 secondeye-detection demo --source data/samples/ultralytics_bus.jpg
-
-# Camera iPhone bằng YOLO26m pretrained, không cần train; trên máy hiện tại iPhone là camera 1
-secondeye-detection camera-demo --camera 1
-
-# Tạo lại pilot công khai (pixels/labels vẫn ở data/local và bị Git bỏ qua)
-python scripts/build_openimages_indoor_pilot.py --review-complete
-
-# Kiểm tra pilot 80 ảnh
-secondeye-detection validate --dataset data/local/indoor_pilot_v1
-
-# Kiểm tra dataset public v1.1 đã khóa (276 ảnh/603 bbox)
-secondeye-detection validate --dataset data/local/indoor_dataset_v1_1
-secondeye-validate-manifest data/local/indoor_dataset_v1_1/sample_manifest.csv \
-  --config configs/data_protocol.toml --require-rows
-
-# Train -> evaluate test nếu có, nếu không dùng val -> export/smoke-test ONNX -> package
-secondeye-detection train --dataset data/local/indoor_dataset_v1_1
+secondeye-detection camera-demo --camera 0
 ```
 
-`camera-demo` chỉ nhận 80 lớp COCO và luôn được đánh dấu là demo. Muốn nhận đúng
-15 lớp SecondEye phải dùng checkpoint YOLO26m đã fine-tune với lệnh `camera
---model ...`; checkpoint YOLO11n cũ không bị ghi đè.
+## Quy tắc risk hiện tại
 
-YOLO26m pretrained được lọc bằng confidence đã calibration trên validation:
-`person=0.29`, `chair=0.69`, `table_desk=0.28`, `sofa=0.31`, `bed=0.48`,
-`backpack_bag=0.17`. Adapter chỉ xuất sáu lớp có mapping rõ ràng; nhãn COCO khác
-bị loại và không được dùng để đoán lớp SecondEye. Chi tiết và giới hạn của kết
-quả nằm tại `docs/benchmarks/yolo26m_confidence_calibration.md`.
+- Chỉ các lớp trong `risk.candidate_classes` mới là ứng viên vật cản.
+- Bbox phải nằm trong vùng di chuyển trung tâm.
+- Depth phải xác nhận band `near` trước khi phát cảnh báo gần.
+- `near/medium/far` là độ sâu tương đối theo frame, không phải mét.
+- Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
+- VQA confidence thấp phải abstain thay vì cố trả lời.
 
-Artifact mỗi lần train được lưu riêng trong `artifacts/object_obstacle/<run_id>/`, gồm
-`best.pt`, `last.pt`, `model.onnx`, `dataset.yaml`, `metrics.json` và `manifest.json`.
-Xem hướng dẫn đầy đủ tại `docs/local_yolo26_pipeline.md`.
-
-## Chính sách dữ liệu indoor v1.1
-
-Dự án không tự chụp ảnh bằng Mac/iPhone và không thu dữ liệu người tham gia.
-`data/local/indoor_dataset_v1_1` chỉ được mở rộng từ dataset công khai có nguồn,
-phiên bản và giấy phép rõ ràng. Ảnh web không rõ quyền không được sử dụng.
-
-Các lớp phổ biến được nhập từ annotation nguồn phù hợp; cửa mở/đóng/kính và cầu
-thang lên/xuống đã được relabel theo từng bbox sau visual review. Nguồn sử dụng là
-Open Images V7 validation/test và ADE20K validation. ADE20K giới hạn ảnh cho nghiên
-cứu/giáo dục phi thương mại, nên model huấn luyện từ bản này không mặc định phù
-hợp để thương mại hóa. Pixels, labels và manifest chi tiết vẫn ở `data/local/`,
-không đưa lên GitHub public. Xem hồ sơ giấy phép tại
-`docs/data/public_dataset_license_review_v1_1.md`.
-
-## Cấu trúc repository
+## Cấu trúc source public
 
 ```text
-configs/                 cấu hình đã version hóa
-data/raw/                dữ liệu gốc local, không commit mặc định
-data/annotations/        nhãn local, không commit mặc định
-data/templates/          manifest và schema CSV mẫu, không chứa dữ liệu thật
-data/samples/            ảnh smoke test có thể tải lại bằng script
-docs/                    Charter, hướng dẫn local và protocol nghiên cứu
-output/pdf/              cẩm nang yêu cầu gốc
-outputs/                 sản phẩm bàn giao theo từng giai đoạn
-src/secondeye/           mã nguồn theo mô-đun
-tests/                   unit test
+configs/pretrained_indoor.toml   schema và runtime config
+src/secondeye/detection/         YOLO26 COCO adapter và risk candidate
+src/secondeye/multimodal/        depth, OCR, VQA, STT và TTS adapters
+src/secondeye/system/            state machine, orchestrator và unified CLI
+tests/                           unit tests không cần tải model
+scripts/fetch_smoke_asset.py     tải ảnh smoke test có thể tái tạo
 ```
 
-## Quy tắc nghiên cứu
+GitHub chỉ chứa source code, test, runtime config và README. Dataset, ảnh, model
+weights, log, artifact, báo cáo, DOCX/PDF và kết quả chạy được giữ local và bị
+`.gitignore` loại khỏi commit.
 
-- Không dùng test set để chọn prompt, ngưỡng hoặc siêu tham số.
-- Mỗi kết quả phải ghi model/version, config, seed, thiết bị, input hash và latency.
-- Không lưu ảnh/âm thanh người dùng dài hạn nếu chưa có mục đích, đồng thuận và thời hạn lưu trữ rõ ràng.
-- Mọi số liệu chưa chạy phải ghi là **dự kiến** hoặc **chỗ trống cần thí nghiệm**.
+## Giới hạn đã biết
 
-## Giấy phép cần chốt
+- 15 lớp mới là schema integration dễ hơn, không phải taxonomy an toàn hoàn chỉnh.
+- Chín threshold mới ngoài sáu lớp benchmark cũ đang là giá trị provisional 0.35.
+- Relative monocular depth không cung cấp khoảng cách tuyệt đối.
+- PaddleOCR, BLIP và Whisper cần benchmark riêng trên dữ liệu tiếng Việt/thực tế.
+- Camera demo cần kiểm thử trực tiếp vì quyền camera và chỉ số thiết bị phụ thuộc macOS.
+- Fine-tuning và đánh giá test độc lập được hoãn đến sau khi integration ổn định.
 
-Pipeline hiện dùng Ultralytics YOLO theo điều kiện AGPL-3.0. Phù hợp để khảo sát học thuật
-khi tuân thủ điều kiện tương ứng, nhưng phải rà soát lại trước khi phát hành mã nguồn,
-demo công khai hoặc thương mại hóa.
+Ultralytics được sử dụng theo điều kiện giấy phép tương ứng; cần rà giấy phép của
+từng model và dependency trước khi phát hành hoặc thương mại hóa.

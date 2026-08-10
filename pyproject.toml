@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secondeye"
-version = "0.1.0"
+version = "0.2.0"
 description = "Research MVP for a multimodal assistive AI system for blind and low-vision users"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -19,11 +19,20 @@ detection = [
     "ultralytics==8.4.115",
 ]
 data = ["remotezip==0.12.3"]
+multimodal = [
+    "transformers>=4.45,<6",
+    "safetensors>=0.4,<1",
+]
+ocr = [
+    "paddleocr>=3,<4",
+    "paddlepaddle>=3,<4",
+]
 dev = ["pytest==9.1.1"]
 
 [project.scripts]
 secondeye-detection = "secondeye.detection.pipeline:main"
 secondeye-validate-manifest = "secondeye.data.protocol:main"
+secondeye = "secondeye.system.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

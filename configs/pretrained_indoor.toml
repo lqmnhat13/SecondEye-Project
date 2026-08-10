@@ -1,0 +1,109 @@
+[project]
+mode = "pretrained_integration"
+schema_name = "indoor_coco_baseline_v1"
+
+[model]
+base_weights = "yolo26m.pt"
+image_size = 640
+confidence_threshold = 0.35
+iou_threshold = 0.50
+device = "auto"
+
+[pretrained_coco]
+global_confidence_threshold = 0.35
+optimization_objective = "integration_baseline_not_final_accuracy"
+benchmark_images = 69
+benchmark_boxes = 68
+unsupported_second_eye_classes = []
+
+[pretrained_coco.class_mapping]
+person = "person"
+chair = "chair"
+"dining table" = "table"
+couch = "sofa"
+bed = "bed"
+backpack = "backpack"
+handbag = "handbag"
+suitcase = "suitcase"
+bottle = "bottle"
+"potted plant" = "potted_plant"
+tv = "tv"
+laptop = "laptop"
+toilet = "toilet"
+sink = "sink"
+refrigerator = "refrigerator"
+
+# Six thresholds were calibrated on the earlier development benchmark. The
+# remaining nine are explicit provisional integration defaults and must not be
+# described as calibrated accuracy results.
+[pretrained_coco.class_thresholds]
+person = 0.29
+chair = 0.69
+table = 0.28
+sofa = 0.31
+bed = 0.48
+backpack = 0.17
+handbag = 0.35
+suitcase = 0.35
+bottle = 0.35
+potted_plant = 0.35
+tv = 0.35
+laptop = 0.35
+toilet = 0.35
+sink = 0.35
+refrigerator = 0.35
+
+# Kept for backward-compatible research commands. The default integration path
+# does not train or fine-tune a model.
+[training]
+epochs = 80
+batch_size = 4
+patience = 15
+workers = 2
+seed = 42
+deterministic = true
+
+[export]
+format = "onnx"
+opset = 17
+dynamic = true
+simplify = true
+
+[paths]
+dataset_root = "data/local/indoor_dataset_v1_2"
+runs_root = "runs/secondeye"
+artifact_root = "artifacts/object_obstacle"
+
+[class_schema]
+names = [
+  "person",
+  "chair",
+  "table",
+  "sofa",
+  "bed",
+  "backpack",
+  "handbag",
+  "suitcase",
+  "bottle",
+  "potted_plant",
+  "tv",
+  "laptop",
+  "toilet",
+  "sink",
+  "refrigerator",
+]
+
+[risk]
+central_zone_fraction = 0.40
+candidate_classes = [
+  "person",
+  "chair",
+  "table",
+  "sofa",
+  "bed",
+  "backpack",
+  "handbag",
+  "suitcase",
+  "bottle",
+  "potted_plant",
+]

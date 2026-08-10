@@ -23,14 +23,14 @@ def discover_project_root() -> Path:
             visited.add(candidate)
             if (
                 (candidate / "pyproject.toml").is_file()
-                and (candidate / "configs" / "yolo26_obstacles.toml").is_file()
+                and (candidate / "configs" / "pretrained_indoor.toml").is_file()
             ):
                 return candidate
     return Path.cwd().resolve()
 
 
 PROJECT_ROOT = discover_project_root()
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "yolo26_obstacles.toml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "pretrained_indoor.toml"
 
 
 @dataclass(frozen=True, slots=True)

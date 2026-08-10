@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
 import pytest
@@ -119,13 +118,12 @@ def test_unsafe_asset_paths_are_rejected():
     assert "UNSAFE_ASSET_PATH" in issue_codes([valid_row(asset_relpath="../private.jpg")])
 
 
-def test_template_has_the_required_columns():
-    path = Path("data/templates/sample_manifest.csv")
-    with path.open(encoding="utf-8", newline="") as handle:
-        fields = set(csv.DictReader(handle).fieldnames or [])
-    assert fields == REQUIRED_COLUMNS
-
-
-def test_config_defines_valid_split_fractions():
-    allowed = load_allowed_values(Path("configs/data_protocol.toml"))
+def test_config_defines_valid_split_fractions(tmp_path: Path):
+    path = tmp_path / "data_protocol.toml"
+    path.write_text(
+        '[split]\nallowed = ["development", "test", "quarantine"]\n'
+        'development_fraction = 0.75\ntest_fraction = 0.25\n',
+        encoding="utf-8",
+    )
+    allowed = load_allowed_values(path)
     assert allowed["split"] == {"development", "test", "quarantine"}

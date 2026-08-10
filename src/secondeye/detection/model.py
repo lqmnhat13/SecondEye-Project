@@ -30,6 +30,144 @@ class Detection:
     depth_zone: None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PretrainedDetection:
+    class_id: int
+    source_class_id: int
+    label: str
+    source_label: str
+    confidence: float
+    bbox_xyxy: list[float]
+    direction: str
+    obstacle_candidate: bool
+    candidate_reason: str
+    depth_zone: None = None
+
+
+class PretrainedCocoDetector:
+    """YOLO COCO adapter used by the integration baseline.
+
+    Every configured class must have an explicit one-to-one COCO mapping. The
+    adapter filters everything else and never invents an unsupported class.
+    """
+
+    def __init__(self, config: DetectionPipelineConfig) -> None:
+        cv2, torch, yolo_class = require_detection_runtime()
+        del cv2
+        self.config = config
+        self.device = select_device(config.model.device, torch)
+        self._torch = torch
+        self.model = yolo_class(config.model.base_weights, task="detect")
+        self.weights = config.model.base_weights
+        self._mapping = dict(config.pretrained_coco.class_mapping)
+        self._thresholds = dict(config.pretrained_coco.class_thresholds)
+        self._canonical_ids = {
+            name: index for index, name in enumerate(config.class_names)
+        }
+        self._lock = threading.Lock()
+
+    def warmup(self) -> None:
+        import numpy as np
+
+        dummy = np.zeros(
+            (self.config.model.image_size, self.config.model.image_size, 3),
+            dtype=np.uint8,
+        )
+        self._predict_result(dummy)
+
+    def _predict_result(self, image: Any) -> tuple[Any, float]:
+        ObjectObstacleDetector._validate_bgr(image)
+        floor = min(self._thresholds.values())
+        synchronize_device(self.device, self._torch)
+        started = time.perf_counter()
+        with self._lock:
+            results = self.model.predict(
+                source=image,
+                conf=floor,
+                iou=self.config.model.iou_threshold,
+                imgsz=self.config.model.image_size,
+                device=self.device,
+                verbose=False,
+            )
+        synchronize_device(self.device, self._torch)
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        if len(results) != 1:
+            raise RuntimeError(f"Cần đúng một inference result, nhận {len(results)}")
+        return results[0], latency_ms
+
+    def _normalize(self, result: Any, latency_ms: float) -> dict[str, object]:
+        image_height, image_width = map(int, result.orig_shape)
+        detections: list[PretrainedDetection] = []
+        keep: list[int] = []
+        display_names = dict(result.names)
+        if result.boxes is not None:
+            for index, box in enumerate(result.boxes):
+                source_class_id = int(box.cls.item())
+                source_label = str(result.names[source_class_id])
+                label = self._mapping.get(source_label)
+                if label is None:
+                    continue
+                confidence = float(box.conf.item())
+                threshold = self._thresholds[label]
+                if confidence < threshold:
+                    continue
+                keep.append(index)
+                display_names[source_class_id] = label
+                xyxy = tuple(float(value) for value in box.xyxy[0].cpu().tolist())
+                assessment = assess_detection_only(
+                    label=label,
+                    confidence=confidence,
+                    bbox_xyxy=xyxy,
+                    image_width=float(image_width),
+                    candidate_classes=self.config.candidate_classes,
+                    confidence_threshold=threshold,
+                    central_zone_fraction=self.config.central_zone_fraction,
+                )
+                detections.append(
+                    PretrainedDetection(
+                        class_id=self._canonical_ids[label],
+                        source_class_id=source_class_id,
+                        label=label,
+                        source_label=source_label,
+                        confidence=round(confidence, 4),
+                        bbox_xyxy=[round(value, 2) for value in xyxy],
+                        direction=assessment.direction.value,
+                        obstacle_candidate=assessment.is_candidate,
+                        candidate_reason=assessment.reason,
+                    )
+                )
+        if result.boxes is not None:
+            result.boxes = result.boxes[keep]
+        result.names = display_names
+        detections.sort(key=lambda item: item.confidence, reverse=True)
+        return {
+            "schema_version": "1.0",
+            "schema_name": "indoor_coco_baseline_v1",
+            "module": "pretrained_coco_detection",
+            "success": True,
+            "pretrained": True,
+            "model": self.weights,
+            "device": self.device,
+            "image_size": {"height": image_height, "width": image_width},
+            "detections": [asdict(item) for item in detections],
+            "latency_ms": round(latency_ms, 2),
+            "limitations": [
+                "Đây là integration baseline COCO, không phải model fine-tuned.",
+                "Detection 2D chỉ tạo ứng viên; depth mới xác nhận vùng gần/trung bình/xa.",
+                "Schema này không hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng rác.",
+            ],
+        }
+
+    def predict_bgr(self, image: Any) -> dict[str, object]:
+        result, latency_ms = self._predict_result(image)
+        return self._normalize(result, latency_ms)
+
+    def predict_and_render_bgr(self, image: Any) -> tuple[dict[str, object], Any]:
+        result, latency_ms = self._predict_result(image)
+        payload = self._normalize(result, latency_ms)
+        return payload, result.plot()
+
+
 class ObjectObstacleDetector:
     """Load one PT/ONNX model and return a stable multimodal-friendly schema.
 

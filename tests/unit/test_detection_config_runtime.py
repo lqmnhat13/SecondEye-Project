@@ -41,41 +41,50 @@ class _Boxes:
         return self.values[indices]
 
 
-def test_default_yolo26_config_has_expected_second_eye_schema():
+def test_default_yolo26_config_has_expected_pretrained_indoor_schema():
     config = load_detection_config()
 
     assert config.model.base_weights == "yolo26m.pt"
     assert config.model.device == "auto"
     assert len(config.class_names) == 15
-    assert config.class_names[6:11] == (
-        "doorway_open",
-        "door_closed",
-        "glass_door",
-        "stairs_up",
-        "stairs_down",
+    assert config.class_names == (
+        "person",
+        "chair",
+        "table",
+        "sofa",
+        "bed",
+        "backpack",
+        "handbag",
+        "suitcase",
+        "bottle",
+        "potted_plant",
+        "tv",
+        "laptop",
+        "toilet",
+        "sink",
+        "refrigerator",
     )
     assert config.candidate_classes <= set(config.class_names)
-    assert config.pretrained_coco.global_confidence_threshold == pytest.approx(0.41)
+    assert config.pretrained_coco.global_confidence_threshold == pytest.approx(0.35)
     assert dict(config.pretrained_coco.class_thresholds) == {
         "person": 0.29,
         "chair": 0.69,
-        "table_desk": 0.28,
+        "table": 0.28,
         "sofa": 0.31,
         "bed": 0.48,
-        "backpack_bag": 0.17,
+        "backpack": 0.17,
+        "handbag": 0.35,
+        "suitcase": 0.35,
+        "bottle": 0.35,
+        "potted_plant": 0.35,
+        "tv": 0.35,
+        "laptop": 0.35,
+        "toilet": 0.35,
+        "sink": 0.35,
+        "refrigerator": 0.35,
     }
-    assert dict(config.pretrained_coco.class_mapping)["dining table"] == "table_desk"
-    assert config.pretrained_coco.unsupported_second_eye_classes == (
-        "cabinet",
-        "doorway_open",
-        "door_closed",
-        "glass_door",
-        "stairs_up",
-        "stairs_down",
-        "box",
-        "trash_bin",
-        "column",
-    )
+    assert dict(config.pretrained_coco.class_mapping)["dining table"] == "table"
+    assert config.pretrained_coco.unsupported_second_eye_classes == ()
 
 
 def test_camera_demo_uses_configured_yolo26_without_model_argument():
@@ -110,7 +119,7 @@ def test_pretrained_coco_filter_maps_only_supported_classes():
         (1, 0.70),
         (2, 0.30),
     ]
-    assert filtered.names[2] == "table_desk"
+    assert filtered.names[2] == "table"
 
 
 def test_schema_guard_rejects_pretrained_coco_mapping():

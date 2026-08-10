@@ -212,7 +212,7 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
             )
     payload = {
         "schema_version": "1.0",
-        "result_type": "pretrained_coco_demo_not_second_eye_model",
+        "result_type": "pretrained_coco_indoor_integration_baseline",
         "model": config.model.base_weights,
         "device": device,
         "source_class_count": len(result.names),
@@ -224,9 +224,8 @@ def command_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> N
         ),
         "detections": detections,
         "warning": (
-            f"Đây là {config.model.base_weights} pretrained COCO; adapter chỉ hỗ trợ "
-            f"{len(config.pretrained_coco.class_mapping)}/15 lớp SecondEye. "
-            "Các lớp chưa hỗ trợ không được giả lập hoặc suy đoán."
+            f"Đây là {config.model.base_weights} pretrained COCO với schema "
+            "indoor_coco_baseline_v1; không phải model an toàn indoor đã fine-tune."
         ),
     }
     if args.output_json:
@@ -469,15 +468,15 @@ def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfi
             f"Không mở được camera {args.camera}. Hãy cấp quyền Camera cho Terminal/Python."
         )
     warning = (
-        f"{config.model.base_weights} pretrained chỉ ánh xạ "
-        f"{len(config.pretrained_coco.class_mapping)}/15 lớp SecondEye; "
-        "các lớp còn lại không được giả lập hoặc suy đoán."
+        f"{config.model.base_weights} pretrained đang dùng đủ 15 lớp của "
+        "indoor_coco_baseline_v1; đây không phải model an toàn indoor đã fine-tune."
     )
     print(f"CẢNH BÁO: {warning}")
-    print(
-        "CHƯA HỖ TRỢ: "
-        + ", ".join(config.pretrained_coco.unsupported_second_eye_classes)
-    )
+    if config.pretrained_coco.unsupported_second_eye_classes:
+        print(
+            "CHƯA HỖ TRỢ: "
+            + ", ".join(config.pretrained_coco.unsupported_second_eye_classes)
+        )
     window_name = "SecondEye YOLO26 COCO demo - q/Esc de thoat"
     try:
         while True:
@@ -533,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.set_defaults(handler=command_validate)
 
     demo = subparsers.add_parser(
-        "demo", help="Smoke test YOLO26m pretrained COCO, không phải model 15 lớp"
+        "demo", help="Smoke test schema indoor COCO pretrained gồm 15 lớp"
     )
     demo.add_argument("--source", type=Path, required=True)
     demo.add_argument("--output-json", type=Path)
@@ -571,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
     camera.set_defaults(handler=command_camera)
 
     camera_demo = subparsers.add_parser(
-        "camera-demo", help="Mở camera bằng YOLO26m pretrained COCO, không cần train"
+        "camera-demo", help="Mở camera bằng schema indoor COCO pretrained, không cần train"
     )
     camera_demo.add_argument("--camera", type=int, default=0)
     camera_demo.set_defaults(handler=command_camera_demo)
