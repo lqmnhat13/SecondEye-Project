@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secondeye"
-version = "0.2.0"
+version = "0.2.1"
 description = "Research MVP for a multimodal assistive AI system for blind and low-vision users"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

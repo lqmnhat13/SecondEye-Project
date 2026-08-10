@@ -2,7 +2,13 @@
 
 from .depth import DepthAnythingEstimator, attach_depth_zones
 from .ocr import PaddleOcrReader
-from .speech import MacOSTextToSpeech, WhisperSpeechToText
+from .speech import (
+    MacOSTextToSpeech,
+    WhisperSpeechToText,
+    localize_vqa_answer,
+    macos_voice_available,
+    normalize_vietnamese_speech,
+)
 from .vqa import PretrainedVisualQuestionAnswering
 
 __all__ = [
@@ -12,4 +18,7 @@ __all__ = [
     "PretrainedVisualQuestionAnswering",
     "WhisperSpeechToText",
     "attach_depth_zones",
+    "localize_vqa_answer",
+    "macos_voice_available",
+    "normalize_vietnamese_speech",
 ]

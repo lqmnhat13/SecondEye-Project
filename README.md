@@ -44,14 +44,18 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 
 # Detection, camera và test
-python -m pip install -e ".[dev,detection]"
+python -m pip install ".[dev,detection]"
 
 # Depth, VQA và Whisper STT
-python -m pip install -e ".[multimodal]"
+python -m pip install ".[multimodal]"
 
 # OCR cài riêng vì PaddlePaddle là dependency lớn
-python -m pip install -e ".[ocr]"
+python -m pip install ".[ocr]"
 ```
+
+Không dùng `pip install -e` trên runtime Python hiện tại: bản vá bảo mật của
+Python bỏ qua editable `.pth` có tên ẩn, làm console script đôi lúc không import
+được `secondeye`. Sau khi sửa source, cài lại bằng lệnh thường ở trên.
 
 Model pretrained được tải vào cache ở lần chạy đầu. Sau khi đã tải đủ model,
 các module local có thể chạy không cần gửi ảnh lên API.
@@ -82,6 +86,27 @@ secondeye camera --camera 1 --depth
 
 Nhấn `q` hoặc `Esc` để thoát, `x` để dừng âm thanh. Khi không bật `--depth`,
 detection chỉ hiển thị ứng viên và không phát cảnh báo “ở gần”.
+
+Camera runtime dùng capture thread và latest-frame buffer riêng: UI không chờ
+YOLO/depth, frame cũ tự bị bỏ và kết quả quá hạn không được vẽ/cảnh báo. Mặc định
+camera/display là 30 FPS, detection tối đa 12 Hz và depth tối đa 3 Hz:
+
+```bash
+secondeye camera --camera 1 --depth \
+  --width 1280 --height 720 \
+  --camera-fps 30 --display-fps 30 \
+  --detection-fps 12 --depth-fps 3 \
+  --max-depth-age 0.5 --overlay-max-age 0.75 \
+  --voice Linh --speech-rate 165
+```
+
+Kiểm tra riêng giọng Việt trước khi mở camera:
+
+```bash
+secondeye speech-test \
+  --voice Linh --speech-rate 165 \
+  --text "Cảnh báo, có ghế ở gần phía trước."
+```
 
 ## Chạy các module trên một ảnh
 
@@ -128,7 +153,9 @@ secondeye-detection camera-demo --camera 0
 - Depth phải xác nhận band `near` trước khi phát cảnh báo gần.
 - `near/medium/far` là độ sâu tương đối theo frame, không phải mét.
 - Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
-- VQA confidence thấp phải abstain thay vì cố trả lời.
+- TTS mặc định dùng giọng `Linh` (`vi_VN`) ở tốc độ 165 từ/phút.
+- Câu trả lời VQA ngắn được ánh xạ sang tiếng Việt; câu tiếng Anh chưa hỗ trợ sẽ
+  abstain thay vì đưa thẳng cho giọng Việt đọc sai.
 
 ## Cấu trúc source public
 

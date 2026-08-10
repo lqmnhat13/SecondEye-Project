@@ -3,19 +3,112 @@
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 import threading
 import time
 from pathlib import Path
 
 
+_SPEECH_REPLACEMENTS = {
+    "SecondEye": "Se-cần Ai",
+    "Second Eye": "Se-cần Ai",
+    "YOLO": "Yô-lô",
+    "OCR": "Ô Xi A",
+    "VQA": "Vi Kiu Ây",
+}
+
+_VQA_VIETNAMESE = {
+    "zero": "không",
+    "one": "một",
+    "two": "hai",
+    "three": "ba",
+    "four": "bốn",
+    "five": "năm",
+    "six": "sáu",
+    "seven": "bảy",
+    "eight": "tám",
+    "nine": "chín",
+    "ten": "mười",
+    "yes": "có",
+    "no": "không",
+    "left": "bên trái",
+    "right": "bên phải",
+    "center": "ở giữa",
+    "person": "người",
+    "people": "người",
+    "chair": "ghế",
+    "table": "bàn",
+    "sofa": "ghế sofa",
+    "bed": "giường",
+    "backpack": "ba lô",
+    "handbag": "túi xách",
+    "suitcase": "va li",
+    "bottle": "chai",
+    "plant": "chậu cây",
+    "television": "ti vi",
+    "tv": "ti vi",
+    "laptop": "máy tính xách tay",
+    "toilet": "bồn cầu",
+    "sink": "bồn rửa",
+    "refrigerator": "tủ lạnh",
+}
+
+
+def normalize_vietnamese_speech(text: str) -> str:
+    """Normalize whitespace and project terms before sending text to `say`."""
+    normalized = " ".join(text.strip().split())
+    for source, target in _SPEECH_REPLACEMENTS.items():
+        normalized = re.sub(re.escape(source), target, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def localize_vqa_answer(answer: str) -> tuple[str, bool]:
+    """Translate safe short BLIP answers; abstain from reading unknown English."""
+    normalized = " ".join(answer.strip().lower().split())
+    if not normalized:
+        return "Tôi chưa đủ chắc chắn để trả lời.", True
+    if normalized in _VQA_VIETNAMESE:
+        return _VQA_VIETNAMESE[normalized], False
+    words = re.findall(r"[a-z]+", normalized)
+    if words and all(word in _VQA_VIETNAMESE for word in words):
+        return " ".join(_VQA_VIETNAMESE[word] for word in words), False
+    if words and normalized.isascii():
+        return (
+            "Tôi đã có kết quả bằng tiếng Anh nhưng chưa thể đọc tiếng Việt chính xác.",
+            True,
+        )
+    return normalize_vietnamese_speech(answer), False
+
+
+def macos_voice_available(voice: str) -> bool:
+    if platform.system() != "Darwin":
+        return False
+    try:
+        output = subprocess.check_output(
+            ["say", "-v", "?"], text=True, stderr=subprocess.DEVNULL
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return any(line.startswith(f"{voice} ") for line in output.splitlines())
+
+
 class MacOSTextToSpeech:
     """Interruptible local TTS backed by the macOS `say` command."""
 
-    def __init__(self, voice: str | None = None, rate: int = 185) -> None:
+    def __init__(self, voice: str | None = "Linh", rate: int = 165) -> None:
         if platform.system() != "Darwin":
             raise RuntimeError("MacOSTextToSpeech chỉ hỗ trợ macOS")
-        self.voice = voice
+        if rate <= 0:
+            raise ValueError("Tốc độ TTS phải dương")
+        if voice is not None and not voice.strip():
+            raise ValueError("Tên giọng TTS không được rỗng")
+        self.voice = None if voice is None else voice.strip()
+        if self.voice is not None and not macos_voice_available(self.voice):
+            raise RuntimeError(
+                f"macOS chưa cài giọng '{self.voice}'. Mở System Settings > "
+                "Accessibility > Spoken Content để tải giọng tiếng Việt."
+            )
         self.rate = rate
         self._process: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
@@ -26,8 +119,14 @@ class MacOSTextToSpeech:
                 self._process.terminate()
             self._process = None
 
+    def wait(self) -> None:
+        with self._lock:
+            process = self._process
+        if process is not None:
+            process.wait()
+
     def speak(self, text: str, *, interrupt: bool = False) -> None:
-        text = text.strip()
+        text = normalize_vietnamese_speech(text)
         if not text:
             return
         with self._lock:
