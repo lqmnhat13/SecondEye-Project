@@ -165,7 +165,7 @@ def test_second_eye_system_reads_localized_vqa_answer():
 
     pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
     image = np.repeat(pattern[:, :, None], 3, axis=2)
-    result = system.ask(image, "How many people?")
+    result = system.ask(image, "What number is shown?")
 
     assert result["spoken_answer_vi"] == "bốn"
     assert result["localization_abstained"] is False
@@ -334,6 +334,14 @@ def test_demo_cli_enables_all_pretrained_mvp_features():
     assert args.semantic_device == "cpu"
     assert args.max_depth_age == 1.5
     assert args.microphone == "auto"
+
+
+def test_image_cli_loads_semantic_models_only_if_the_question_needs_them():
+    args = build_parser().parse_args(
+        ["image", "--source", "frame.jpg", "--question", "Có bao nhiêu người?"]
+    )
+
+    assert args.lazy_semantic is True
 
 
 def test_quality_gate_rejects_dark_or_blurry_frames():

@@ -7,6 +7,10 @@ from typing import Any
 
 from secondeye.multimodal.depth import attach_depth_zones
 from secondeye.multimodal.quality import assess_image_quality
+from secondeye.multimodal.questions import (
+    normalize_visual_question,
+    plain_vietnamese,
+)
 from secondeye.multimodal.speech import localize_vqa_answer
 
 from .localization import VI_DIRECTIONS, VI_LABELS
@@ -21,6 +25,112 @@ _UNSAFE_VQA_TERMS = (
     "which way should i go",
     "safe to cross",
 )
+
+_SEMANTIC_DETECTION_CONFIDENCE = 0.45
+_VI_NUMBERS = {
+    0: "không",
+    1: "một",
+    2: "hai",
+    3: "ba",
+    4: "bốn",
+    5: "năm",
+    6: "sáu",
+    7: "bảy",
+    8: "tám",
+    9: "chín",
+    10: "mười",
+}
+
+
+def _semantic_detections(
+    detection_result: dict[str, object],
+) -> tuple[list[dict[str, object]], int]:
+    accepted: list[dict[str, object]] = []
+    discarded = 0
+    for raw_item in detection_result.get("detections", []):
+        item = dict(raw_item)
+        confidence = item.get("confidence")
+        if confidence is not None and float(confidence) < _SEMANTIC_DETECTION_CONFIDENCE:
+            discarded += 1
+            continue
+        accepted.append(item)
+    return accepted, discarded
+
+
+def _scene_summary(
+    detection_result: dict[str, object],
+    *,
+    directions: set[str] | None = None,
+) -> tuple[str, bool, list[dict[str, object]], int]:
+    detections, discarded = _semantic_detections(detection_result)
+    if directions is not None:
+        detections = [
+            item for item in detections if str(item.get("direction")) in directions
+        ]
+    groups: dict[tuple[str, str, str | None], dict[str, object]] = {}
+    for item in detections:
+        label = str(item.get("label", ""))
+        if not label:
+            continue
+        direction = str(item.get("direction", "center"))
+        depth = item.get("depth_zone")
+        depth_zone = None if depth in (None, "", "unknown") else str(depth)
+        key = (label, direction, depth_zone)
+        group = groups.setdefault(
+            key,
+            {
+                "label": label,
+                "direction": direction,
+                "depth_zone": depth_zone,
+                "count": 0,
+                "max_confidence": None,
+            },
+        )
+        group["count"] = int(group["count"]) + 1
+        if item.get("confidence") is not None:
+            confidence = float(item["confidence"])
+            previous = group["max_confidence"]
+            group["max_confidence"] = (
+                confidence
+                if previous is None
+                else max(float(previous), confidence)
+            )
+    if not groups:
+        return (
+            "Tôi chưa nhận diện được vật thể đủ chắc chắn trong cảnh.",
+            True,
+            [],
+            discarded,
+        )
+
+    depth_rank = {"near": 0, "medium": 1, "far": 2, None: 3}
+    direction_rank = {"center": 0, "left": 1, "right": 1}
+    ordered = sorted(
+        groups.values(),
+        key=lambda group: (
+            depth_rank.get(group["depth_zone"], 3),
+            direction_rank.get(str(group["direction"]), 2),
+            -float(group["max_confidence"] or 0.0),
+            str(group["label"]),
+        ),
+    )[:5]
+    phrases: list[str] = []
+    for group in ordered:
+        count = int(group["count"])
+        readable = VI_LABELS.get(str(group["label"]), str(group["label"]))
+        prefix = f"{count} " if count > 1 else ""
+        direction = VI_DIRECTIONS.get(str(group["direction"]), "trong ảnh")
+        depth = group["depth_zone"]
+        if depth == "near":
+            location = f"ở gần {direction}"
+        elif depth == "medium":
+            location = f"ở khoảng cách trung bình {direction}"
+        elif depth == "far":
+            location = f"ở xa {direction}"
+        else:
+            location = direction
+        phrases.append(f"{prefix}{readable} {location}")
+    return "Tôi thấy " + ", ".join(phrases) + ".", False, ordered, discarded
 
 
 class SecondEyeSystem:
@@ -169,9 +279,13 @@ class SecondEyeSystem:
         self.orchestrator.transition(SystemState.READ)
         return result
 
-    def ask(self, image: Any, question: str) -> dict[str, object]:
-        if self.vqa is None:
-            raise RuntimeError("VQA chưa được bật")
+    def ask(
+        self,
+        image: Any,
+        question: str,
+        *,
+        detection_result: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         question = " ".join(question.strip().split())
         if not question:
             raise ValueError("question không được rỗng")
@@ -208,7 +322,107 @@ class SecondEyeSystem:
             self._speak(answer, AlertPriority.SEMANTIC)
             self.orchestrator.transition(SystemState.QUESTION)
             return result
-        result = self.vqa.ask_bgr(image, question)
+        normalized = normalize_visual_question(question)
+        normalization = normalized.as_dict()
+        if normalized.intent == "unsupported":
+            answer = (
+                "Tôi chưa hỗ trợ dạng câu hỏi này. Hãy hỏi về số lượng, màu sắc, "
+                "hành động, trang phục hoặc đồ vật phía trước."
+            )
+            result = {
+                "schema_version": "1.0",
+                "module": "vqa",
+                "success": True,
+                "question": question,
+                "model_question": None,
+                "question_normalization": normalization,
+                "answer": answer,
+                "spoken_answer_vi": answer,
+                "abstained": True,
+                "reason": "unsupported_vietnamese_question",
+                "localization_abstained": False,
+                "translation_used": False,
+                "translation": None,
+                "translation_error": None,
+                "quality": quality.as_dict(),
+            }
+            self._speak(answer, AlertPriority.SEMANTIC)
+            self.orchestrator.transition(SystemState.QUESTION)
+            return result
+
+        if normalized.intent in {"grounded_count", "grounded_scene"}:
+            grounded = detection_result or self.detector.predict_bgr(image)
+            if normalized.intent == "grounded_count":
+                detections, discarded = _semantic_detections(grounded)
+                count = (
+                    len(detections)
+                    if normalized.target_label == "object"
+                    else sum(
+                        str(item.get("label")) == normalized.target_label
+                        for item in detections
+                    )
+                )
+                if count:
+                    number = _VI_NUMBERS.get(count, str(count))
+                    readable = (
+                        "vật thể"
+                        if normalized.target_label == "object"
+                        else VI_LABELS.get(
+                            str(normalized.target_label), str(normalized.target_label)
+                        )
+                    )
+                    answer = f"Tôi nhận diện được {number} {readable} trong ảnh."
+                    abstained = False
+                else:
+                    answer = (
+                        "Tôi chưa nhận diện được đối tượng được hỏi đủ chắc chắn "
+                        "trong ảnh."
+                    )
+                    abstained = True
+                object_groups = [
+                    {
+                        "label": normalized.target_label,
+                        "count": count,
+                    }
+                ]
+            else:
+                plain_question = plain_vietnamese(question)
+                front_only = "front" in question.casefold() or any(
+                    marker in plain_question
+                    for marker in ("phia truoc", "truoc mat")
+                )
+                answer, abstained, object_groups, discarded = _scene_summary(
+                    grounded,
+                    directions={"center"} if front_only else None,
+                )
+            result = {
+                "schema_version": "1.0",
+                "module": "grounded_visual_query",
+                "success": True,
+                "question": question,
+                "model_question": normalized.model_question,
+                "question_normalization": normalization,
+                "answer": answer,
+                "spoken_answer_vi": answer,
+                "abstained": abstained,
+                "reason": "no_grounded_detection" if abstained else None,
+                "source": "pretrained_detection",
+                "object_groups": object_groups,
+                "discarded_low_confidence": discarded,
+                "localization_abstained": False,
+                "translation_used": False,
+                "translation": None,
+                "translation_error": None,
+                "quality": quality.as_dict(),
+            }
+            self._speak(answer, AlertPriority.SEMANTIC)
+            self.orchestrator.transition(SystemState.QUESTION)
+            return result
+
+        if self.vqa is None:
+            raise RuntimeError("VQA chưa được bật")
+        assert normalized.model_question is not None
+        result = self.vqa.ask_bgr(image, normalized.model_question)
         answer = str(result["answer"])
         spoken_answer, localization_abstained = localize_vqa_answer(answer)
         translation: dict[str, object] | None = None
@@ -231,6 +445,9 @@ class SecondEyeSystem:
                     localization_abstained = True
         result = {
             **result,
+            "question": question,
+            "model_question": normalized.model_question,
+            "question_normalization": normalization,
             "spoken_answer_vi": spoken_answer,
             "localization_abstained": localization_abstained,
             "translation_used": translation_used,
@@ -254,29 +471,7 @@ class SecondEyeSystem:
             if image is None:
                 raise ValueError("describe_scene cần image hoặc detection_result")
             detection_result = self.detector.predict_bgr(image)
-        detections = list(detection_result.get("detections", []))
-        groups: dict[tuple[str, str], int] = {}
-        for item in detections:
-            label = str(item.get("label", ""))
-            direction = str(item.get("direction", "center"))
-            if label:
-                groups[(label, direction)] = groups.get((label, direction), 0) + 1
-        if not groups:
-            text, abstained = (
-                "Tôi chưa nhận diện được vật thể rõ ràng trong cảnh.",
-                True,
-            )
-        else:
-            phrases = []
-            for (label, direction), count in sorted(
-                groups.items(), key=lambda value: (-value[1], value[0][0])
-            )[:5]:
-                readable = VI_LABELS.get(label, label)
-                prefix = f"{count} " if count > 1 else ""
-                phrases.append(
-                    f"{prefix}{readable} {VI_DIRECTIONS.get(direction, 'trong ảnh')}"
-                )
-            text, abstained = "Tôi thấy " + ", ".join(phrases) + ".", False
+        text, abstained, groups, discarded = _scene_summary(detection_result)
         self.orchestrator.transition(SystemState.SCENE)
         self._speak(text, AlertPriority.SEMANTIC)
         return {
@@ -286,12 +481,11 @@ class SecondEyeSystem:
             "description": text,
             "abstained": abstained,
             "source": "pretrained_detection",
-            "object_groups": [
-                {"label": label, "direction": direction, "count": count}
-                for (label, direction), count in groups.items()
-            ],
+            "object_groups": groups,
+            "discarded_low_confidence": discarded,
             "limitations": [
-                "Chỉ mô tả các lớp pretrained được cấu hình; không suy đoán vật ngoài schema."
+                "Chỉ mô tả detection có confidence từ 0.45 và các lớp được cấu hình.",
+                "Khoảng cách gần/trung bình/xa là tương đối, không phải mét.",
             ],
         }
 

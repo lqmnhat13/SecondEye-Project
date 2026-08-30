@@ -32,6 +32,11 @@ def _plain_vietnamese(text: str) -> str:
     )
 
 
+def copy_frame_for_display(raw_frame: Any) -> Any:
+    """Keep UI drawings isolated from frames sent to OCR/VQA."""
+    return raw_frame.copy()
+
+
 class SemanticWorker:
     """Run OCR, VQA and microphone tasks without blocking safety inference."""
 
@@ -51,6 +56,7 @@ class SemanticWorker:
         self.transcriber_factory = transcriber_factory
         self._commands: queue.Queue[SemanticCommand | None] = queue.Queue(maxsize=1)
         self._lock = threading.Lock()
+        self._closing = threading.Event()
         self._busy = False
         self._status = "Sẵn sàng"
         self._last_result: dict[str, object] | None = None
@@ -63,13 +69,16 @@ class SemanticWorker:
 
     def submit(self, command: SemanticCommand) -> bool:
         with self._lock:
-            if self._busy or not self._commands.empty():
+            if self._closing.is_set() or self._busy or not self._commands.empty():
                 self._status = "Tác vụ ngữ nghĩa đang chạy"
                 return False
+            self._busy = True
+            self._status = f"Đang chờ chạy {command.kind}..."
         try:
             self._commands.put_nowait(command)
             return True
         except queue.Full:
+            self._set_status("Tác vụ ngữ nghĩa đang chạy", busy=False)
             return False
 
     def snapshot(self) -> tuple[bool, str, dict[str, object] | None]:
@@ -77,6 +86,7 @@ class SemanticWorker:
             return self._busy, self._status, self._last_result
 
     def close(self) -> None:
+        self._closing.set()
         try:
             self._commands.put_nowait(None)
         except queue.Full:
@@ -129,7 +139,11 @@ class SemanticWorker:
             )
             intent = "scene"
         else:
-            intent_result = self.system.ask(command.frame, transcript)
+            intent_result = self.system.ask(
+                command.frame,
+                transcript,
+                detection_result=command.detection,
+            )
             intent = "vqa"
         return {"stt": stt, "intent": intent, "result": intent_result}
 
@@ -141,7 +155,11 @@ class SemanticWorker:
                 command.frame, detection_result=command.detection
             )
         if command.kind == "vqa":
-            return self.system.ask(command.frame, self.default_question)
+            return self.system.ask(
+                command.frame,
+                self.default_question,
+                detection_result=command.detection,
+            )
         if command.kind == "microphone":
             return self._microphone(command)
         raise ValueError(f"Tác vụ không được hỗ trợ: {command.kind}")
@@ -171,6 +189,8 @@ class SemanticWorker:
             else:
                 self.logger.log(command.kind, result)
                 self._set_status(f"Hoàn tất {command.kind}", busy=False, result=result)
+            if self._closing.is_set():
+                return
 
 
 def run_mvp_demo(
@@ -227,6 +247,8 @@ def run_mvp_demo(
             if packet is None:
                 time.sleep(0.01)
                 continue
+            raw_frame = packet.frame
+            display_frame = copy_frame_for_display(raw_frame)
             now = time.monotonic()
             if args.max_seconds is not None and now - demo_started >= args.max_seconds:
                 break
@@ -246,7 +268,7 @@ def run_mvp_demo(
                 if payload is not None and fresh
                 else []
             )
-            overlays = draw_detection_overlays(cv2, packet.frame, detections)
+            overlays = draw_detection_overlays(cv2, display_frame, detections)
             if payload is not None and int(payload["frame_id"]) != last_logged_frame:
                 last_logged_frame = int(payload["frame_id"])
                 logger.log("vision", payload)
@@ -276,14 +298,14 @@ def run_mvp_demo(
                     (
                         "o đọc chữ | s mô tả | v hỏi ảnh | m nói | r lặp lại | "
                         "x dừng | q thoát",
-                        (12, packet.frame.shape[0] - 28),
+                        (12, display_frame.shape[0] - 28),
                         (255, 255, 255),
                         17,
                     ),
                 ]
             )
-            text_renderer.draw_bgr(packet.frame, overlays)
-            cv2.imshow(window, packet.frame)
+            text_renderer.draw_bgr(display_frame, overlays)
+            cv2.imshow(window, display_frame)
             key = cv2.waitKey(max(1, int(1000.0 / args.display_fps))) & 0xFF
             if key in (27, ord("q")):
                 break
@@ -302,7 +324,7 @@ def run_mvp_demo(
                 accepted = semantic.submit(
                     SemanticCommand(
                         kind,
-                        packet.frame.copy(),
+                        raw_frame.copy(),
                         None if payload is None or not fresh else payload["detection"],
                     )
                 )

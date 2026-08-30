@@ -8,11 +8,40 @@ from typing import Any
 from secondeye.accelerator import accelerator_guard
 
 
+_UNCERTAIN_ANSWERS = {
+    "cannot tell",
+    "i cannot tell",
+    "i do not know",
+    "i don t know",
+    "not sure",
+    "unknown",
+    "unclear",
+}
+
+
+def _from_pretrained_offline_first(factory: Any, model_name: str) -> Any:
+    """Use an existing cache without a network metadata retry penalty."""
+    try:
+        return factory.from_pretrained(model_name, local_files_only=True)
+    except OSError:
+        return factory.from_pretrained(model_name)
+
+
+def _is_uncertain_answer(answer: str) -> bool:
+    normalized = " ".join(
+        "".join(
+            character if character.isalnum() else " "
+            for character in answer.casefold()
+        ).split()
+    )
+    return normalized in _UNCERTAIN_ANSWERS
+
+
 class PretrainedVisualQuestionAnswering:
     def __init__(
         self,
         model_name: str = "Salesforce/blip-vqa-base",
-        minimum_score: float = 0.20,
+        minimum_score: float = 0.30,
         device: str = "auto",
     ) -> None:
         if not 0.0 <= minimum_score <= 1.0:
@@ -35,8 +64,10 @@ class PretrainedVisualQuestionAnswering:
         self.minimum_score = minimum_score
         self.device = device
         self._torch = torch
-        self.processor = BlipProcessor.from_pretrained(model_name)
-        model = BlipForQuestionAnswering.from_pretrained(model_name)
+        self.processor = _from_pretrained_offline_first(BlipProcessor, model_name)
+        model = _from_pretrained_offline_first(
+            BlipForQuestionAnswering, model_name
+        )
         with accelerator_guard(device, torch):
             self.model = model.to(device)
         self.model.eval()
@@ -76,7 +107,8 @@ class PretrainedVisualQuestionAnswering:
             if token_confidences
             else 0.0
         )
-        abstained = not raw_answer or score < self.minimum_score
+        uncertain_answer = _is_uncertain_answer(raw_answer)
+        abstained = not raw_answer or score < self.minimum_score or uncertain_answer
         answer = (
             "Tôi chưa đủ chắc chắn để trả lời từ hình ảnh hiện tại."
             if abstained
@@ -93,6 +125,13 @@ class PretrainedVisualQuestionAnswering:
             "raw_answer": raw_answer,
             "confidence": round(score, 4),
             "abstained": abstained,
+            "abstain_reason": (
+                "model_uncertain_answer"
+                if uncertain_answer
+                else "low_generation_score"
+                if score < self.minimum_score
+                else None
+            ),
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
             "limitations": [
                 "Confidence là token-generation score chưa calibration, không phải xác suất đúng.",

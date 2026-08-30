@@ -84,7 +84,8 @@ class _SemanticSystem:
     def __init__(self):
         self.questions = []
 
-    def ask(self, frame, question):
+    def ask(self, frame, question, *, detection_result=None):
+        assert detection_result is None
         self.questions.append(question)
         return {"answer": "ghế"}
 
@@ -108,6 +109,35 @@ def test_push_to_talk_routes_transcript_to_vqa_without_blocking_submit(tmp_path)
         assert result["intent"] == "vqa"
         assert system.questions == ["Có gì trước mặt tôi?"]
     finally:
+        worker.close()
+
+
+def test_semantic_worker_rejects_a_second_command_without_submit_race(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingSystem:
+        def read_text(self, frame):
+            started.set()
+            release.wait(timeout=0.5)
+            return {"transcript": "xong"}
+
+        def announce(self, text, priority):
+            raise AssertionError(text)
+
+    worker = SemanticWorker(
+        BlockingSystem(),
+        SessionLogger(tmp_path / "race.jsonl"),
+        default_question="unused",
+    )
+    try:
+        assert worker.submit(SemanticCommand("ocr", frame=object())) is True
+        assert worker.submit(SemanticCommand("ocr", frame=object())) is False
+        assert started.wait(timeout=0.5)
+        release.set()
+        _wait_until(lambda: worker.snapshot()[2] is not None)
+    finally:
+        release.set()
         worker.close()
 
 

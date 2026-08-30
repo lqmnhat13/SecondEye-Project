@@ -154,6 +154,13 @@ _ACTIONS = {
     "walking": "đang đi bộ",
 }
 
+_FIXED_VISUAL_ANSWERS = {
+    "talking on phone": "đang nói chuyện điện thoại",
+    "talking on the phone": "đang nói chuyện điện thoại",
+    "using a phone": "đang sử dụng điện thoại",
+    "using phone": "đang sử dụng điện thoại",
+}
+
 _RELATIONS = (
     ("directly in front of ", "ngay phía trước "),
     ("in front of ", "phía trước "),
@@ -246,6 +253,10 @@ def translate_visual_answer(text: str) -> str | None:
     source = _normalized_english(text)
     if not source or len(source.split()) > 20 or not source.isascii():
         return None
+
+    fixed = _FIXED_VISUAL_ANSWERS.get(source)
+    if fixed is not None:
+        return fixed
 
     color = _translate_colors(source)
     if color is not None:

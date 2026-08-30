@@ -20,7 +20,7 @@ Camera Mac/iPhone
     -> risk fusion + cooldown
     -> macOS TTS
 
-Ảnh theo yêu cầu -> PaddleOCR hoặc BLIP VQA -> TTS
+Ảnh theo yêu cầu -> Apple Vision OCR (PaddleOCR fallback) hoặc visual query/VQA -> TTS
 Audio đã ghi     -> Whisper STT
 ```
 
@@ -51,7 +51,7 @@ source ~/Library/Caches/SecondEye/venv/bin/activate
 
 Runtime mặc định nằm tại `~/Library/Caches/SecondEye/venv`. Có thể đổi bằng biến
 `SECONDEYE_RUNTIME_DIR`. `setup_mvp.sh` cài detection, depth/VQA/STT, OCR và test,
-sau đó chạy `doctor` bằng import thật.
+biên dịch helper Apple Vision OCR, sau đó chạy `doctor` bằng import thật.
 
 Model pretrained được tải vào cache ở lần chạy đầu. Sau khi đã tải đủ model,
 các module local có thể chạy không cần gửi ảnh lên API.
@@ -205,6 +205,9 @@ Tài liệu local được phân loại và dẫn đường tại
 phạm vi đang dùng; tài liệu dữ liệu/taxonomy an toàn lịch sử nằm dưới
 `docs/research/data/` và không phải dependency của MVP pretrained.
 
+Hướng dẫn vận hành chi tiết, đầy đủ tham số, phím điều khiển, output và xử lý lỗi:
+[`docs/guides/complete-usage-guide.md`](docs/guides/complete-usage-guide.md).
+
 GitHub có thể chứa source code, test, runtime config và tài liệu Markdown công
 khai. Dataset, ảnh/model weights, log, artifact, tài liệu trong `docs/private/`,
 DOCX/PDF/XLSX và kết quả chạy được giữ local và bị `.gitignore` loại khỏi commit.
@@ -214,7 +217,7 @@ DOCX/PDF/XLSX và kết quả chạy được giữ local và bị `.gitignore` 
 - 15 lớp mới là schema integration dễ hơn, không phải taxonomy an toàn hoàn chỉnh.
 - Chín threshold mới ngoài sáu lớp benchmark cũ đang là giá trị provisional 0.35.
 - Relative monocular depth không cung cấp khoảng cách tuyệt đối.
-- PaddleOCR, BLIP và Whisper cần benchmark riêng trên dữ liệu tiếng Việt/thực tế.
+- Apple Vision/PaddleOCR, BLIP và Whisper vẫn cần benchmark trên dữ liệu thực tế.
 - Camera demo cần kiểm thử trực tiếp vì quyền camera và chỉ số thiết bị phụ thuộc macOS.
 - Fine-tuning không thuộc phạm vi phiên bản hiện tại. Nếu được thực hiện trong
   tương lai, đó sẽ là một nhánh nghiên cứu riêng với dataset/protocol mới được

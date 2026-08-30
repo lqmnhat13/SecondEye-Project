@@ -7,6 +7,8 @@ là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current
 
 ## Đang sử dụng
 
+- `guides/complete-usage-guide.md`: hướng dẫn sử dụng đầy đủ từ cài đặt, kiến
+  trúc logic, toàn bộ CLI đến xử lý lỗi; đây là tài liệu vận hành chính.
 - `current/project-charter.md`: phạm vi, RQ, quyết định dùng model pretrained và
   tiêu chí đóng MVP.
 - `current/roadmap.md`: kế hoạch triển khai và trạng thái công việc.

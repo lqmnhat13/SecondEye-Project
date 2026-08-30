@@ -19,7 +19,7 @@ from secondeye.multimodal import (
     DepthAnythingEstimator,
     FFmpegMicrophoneRecorder,
     MacOSTextToSpeech,
-    PaddleOcrReader,
+    AutomaticOcrReader,
     PretrainedEnglishVietnameseTranslator,
     PretrainedVisualQuestionAnswering,
     WhisperSpeechToText,
@@ -40,12 +40,12 @@ DEMO_SEMANTIC_DEVICE = "cpu"
 
 class _LazyOcrReader:
     def __init__(self) -> None:
-        self._value: PaddleOcrReader | None = None
+        self._value: AutomaticOcrReader | None = None
         self._lock = threading.Lock()
 
     def read_bgr(self, image: Any) -> dict[str, object]:
         with self._lock:
-            self._value = self._value or PaddleOcrReader()
+            self._value = self._value or AutomaticOcrReader()
             value = self._value
         return value.read_bgr(image)
 
@@ -80,7 +80,7 @@ def _build_system(args: argparse.Namespace) -> SecondEyeSystem:
     lazy_semantic = bool(getattr(args, "lazy_semantic", False))
     semantic_device = str(getattr(args, "semantic_device", config.model.device))
     ocr = (
-        (_LazyOcrReader() if lazy_semantic else PaddleOcrReader())
+        (_LazyOcrReader() if lazy_semantic else AutomaticOcrReader())
         if getattr(args, "ocr", False)
         else None
     )
@@ -178,13 +178,16 @@ def command_image(args: argparse.Namespace) -> None:
     if image is None:
         raise ValueError(f"Không đọc được ảnh: {source}")
     system = _build_system(args)
-    payload: dict[str, Any] = {
-        "frame": system.process_frame(image, with_depth=args.depth)
-    }
+    frame_result = system.process_frame(image, with_depth=args.depth)
+    payload: dict[str, Any] = {"frame": frame_result}
     if args.ocr:
         payload["ocr"] = system.read_text(image)
     if args.question:
-        payload["vqa"] = system.ask(image, args.question)
+        payload["vqa"] = system.ask(
+            image,
+            args.question,
+            detection_result=frame_result["detection"],
+        )
     safe = _json_safe(payload)
     if args.output:
         write_json(args.output, safe)
@@ -323,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("--question")
     _add_tts_arguments(image)
     image.add_argument("--output", type=Path)
-    image.set_defaults(handler=command_image)
+    image.set_defaults(handler=command_image, lazy_semantic=True)
 
     camera = subparsers.add_parser("camera", help="Chạy camera Mac/iPhone end-to-end")
     camera.add_argument("--camera", type=int, default=0)

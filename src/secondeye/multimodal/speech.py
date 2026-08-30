@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,7 +252,7 @@ class WhisperSpeechToText:
         self,
         model_name: str = "openai/whisper-small",
         device: str = "auto",
-        minimum_wav_rms: float = 0.015,
+        minimum_wav_rms: float = 0.025,
     ) -> None:
         if minimum_wav_rms < 0:
             raise ValueError("minimum_wav_rms không được âm")
@@ -343,14 +344,40 @@ class WhisperSpeechToText:
             result = speech_pipeline(
                 str(audio_path), generate_kwargs={"language": "vi"}
             )
+        transcript = str(result.get("text", "")).strip()
+        normalized_transcript = unicodedata.normalize("NFD", transcript.casefold())
+        ascii_transcript = normalized_transcript.encode("ascii", "ignore").decode(
+            "ascii"
+        )
+        plain_transcript = " ".join(
+            re.sub(r"[^a-z0-9]+", " ", ascii_transcript).split()
+        )
+        likely_silence_hallucination = bool(
+            quality is not None
+            and quality["rms"] < 0.035
+            and any(
+                phrase in plain_transcript
+                for phrase in (
+                    "hay subscribe",
+                    "dang ky kenh",
+                    "cam on cac ban da xem",
+                    "khong bo lo nhung video",
+                )
+            )
+        )
         return {
             "schema_version": "1.0",
             "module": "stt",
             "success": True,
             "model": self.model_name,
             "device": self.device,
-            "transcript": str(result.get("text", "")).strip(),
-            "abstained": False,
+            "transcript": "" if likely_silence_hallucination else transcript,
+            "abstained": likely_silence_hallucination,
+            "reason": (
+                "likely_silence_hallucination"
+                if likely_silence_hallucination
+                else None
+            ),
             "audio_quality": quality,
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
         }

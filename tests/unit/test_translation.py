@@ -38,6 +38,8 @@ from secondeye.multimodal.translation import (
         ("two black shirts", "hai chiếc áo sơ mi màu đen"),
         ("a green traffic light", "một chiếc đèn giao thông màu xanh lá"),
         ("the bus is parked on the street", "chiếc xe buýt đỗ trên đường"),
+        ("talking on phone", "đang nói chuyện điện thoại"),
+        ("using a phone", "đang sử dụng điện thoại"),
     ],
 )
 def test_visual_answer_regressions(source, expected):
