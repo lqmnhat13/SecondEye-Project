@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import array
+import math
 import platform
 import re
 import shutil
@@ -9,8 +11,7 @@ import subprocess
 import threading
 import time
 import wave
-import array
-import math
+from dataclasses import dataclass
 from pathlib import Path
 
 from secondeye.accelerator import accelerator_guard
@@ -355,10 +356,89 @@ class WhisperSpeechToText:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AVFoundationAudioDevice:
+    """One audio input reported by FFmpeg's AVFoundation backend."""
+
+    index: str
+    name: str
+
+
+_AVFOUNDATION_DEVICE_LINE = re.compile(r"\]\s+\[(\d+)\]\s+(.+?)\s*$")
+_VIRTUAL_AUDIO_TERMS = (
+    "microsoft teams",
+    "blackhole",
+    "soundflower",
+    "virtual",
+)
+
+
+def list_avfoundation_audio_devices(
+    executable: str,
+    *,
+    timeout_seconds: float = 5.0,
+) -> tuple[AVFoundationAudioDevice, ...]:
+    """Return macOS audio inputs without relying on their unstable indexes."""
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "-nostdin",
+                "-hide_banner",
+                "-f",
+                "avfoundation",
+                "-list_devices",
+                "true",
+                "-i",
+                "",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Hết thời gian dò danh sách microphone AVFoundation") from exc
+
+    devices: list[AVFoundationAudioDevice] = []
+    reading_audio = False
+    for line in f"{completed.stderr}\n{completed.stdout}".splitlines():
+        if "AVFoundation audio devices:" in line:
+            reading_audio = True
+            continue
+        if not reading_audio:
+            continue
+        match = _AVFOUNDATION_DEVICE_LINE.search(line)
+        if match:
+            devices.append(
+                AVFoundationAudioDevice(index=match.group(1), name=match.group(2))
+            )
+    if not devices:
+        raise RuntimeError(
+            "Không tìm thấy microphone AVFoundation. Kiểm tra quyền Microphone của Terminal/Python."
+        )
+    return tuple(devices)
+
+
+def _automatic_microphone_rank(device: AVFoundationAudioDevice) -> tuple[int, int]:
+    name = device.name.casefold()
+    is_microphone = "microphone" in name or " mic" in name
+    is_builtin = ("macbook" in name or "built-in" in name) and is_microphone
+    is_virtual = any(term in name for term in _VIRTUAL_AUDIO_TERMS)
+    if is_builtin:
+        priority = 0
+    elif is_microphone and not is_virtual:
+        priority = 1
+    elif not is_virtual:
+        priority = 2
+    else:
+        priority = 3
+    return priority, int(device.index)
+
+
 class FFmpegMicrophoneRecorder:
     """Record a short push-to-talk WAV from a macOS AVFoundation audio device."""
 
-    def __init__(self, device: str = "1", duration_seconds: float = 4.0) -> None:
+    def __init__(self, device: str = "auto", duration_seconds: float = 4.0) -> None:
         if platform.system() != "Darwin":
             raise RuntimeError("Thu microphone hiện chỉ hỗ trợ macOS")
         if duration_seconds <= 0:
@@ -368,11 +448,36 @@ class FFmpegMicrophoneRecorder:
             raise RuntimeError("Thiếu ffmpeg. Cài bằng: brew install ffmpeg")
         self.executable = executable
         self.device = str(device).strip()
+        if not self.device:
+            raise ValueError("Microphone không được để trống")
         self.duration_seconds = duration_seconds
+        self.selected_device: AVFoundationAudioDevice | None = None
+
+    def _resolve_device(self) -> AVFoundationAudioDevice:
+        requested = self.device
+        if requested.isdecimal():
+            return AVFoundationAudioDevice(index=requested, name=f"device {requested}")
+
+        devices = list_avfoundation_audio_devices(self.executable)
+        if requested.casefold() == "auto":
+            return min(devices, key=_automatic_microphone_rank)
+
+        exact = next(
+            (item for item in devices if item.name.casefold() == requested.casefold()),
+            None,
+        )
+        if exact is not None:
+            return exact
+        available = ", ".join(f"{item.index}: {item.name}" for item in devices)
+        raise RuntimeError(
+            f"Không tìm thấy microphone '{requested}'. Thiết bị hiện có: {available}"
+        )
 
     def record(self, output_path: Path) -> Path:
         output_path = output_path.expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        selected = self._resolve_device()
+        self.selected_device = selected
         command = [
             self.executable,
             "-nostdin",
@@ -382,7 +487,7 @@ class FFmpegMicrophoneRecorder:
             "-f",
             "avfoundation",
             "-i",
-            f":{self.device}",
+            f":{selected.index}",
             "-t",
             str(self.duration_seconds),
             "-ac",
@@ -392,12 +497,23 @@ class FFmpegMicrophoneRecorder:
             "-y",
             str(output_path),
         ]
-        completed = subprocess.run(command, capture_output=True, text=True)
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.duration_seconds + 8.0,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Microphone '{selected.name}' không trả dữ liệu trong thời gian cho phép"
+            ) from exc
         if completed.returncode != 0 or not output_path.is_file():
             detail = completed.stderr.strip().splitlines()
             message = detail[-1] if detail else "không rõ lỗi"
             raise RuntimeError(
-                "Không thu được microphone. Kiểm tra quyền Microphone và chỉ số thiết bị: "
+                f"Không thu được microphone '{selected.name}' (index {selected.index}). "
+                "Kiểm tra quyền Microphone: "
                 + message
             )
         return output_path

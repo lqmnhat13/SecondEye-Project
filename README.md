@@ -77,8 +77,13 @@ VQA, push-to-talk, TTS ưu tiên và session log:
 Với iPhone Continuity Camera:
 
 ```bash
-./run_mvp.sh --camera 1 --microphone 1
+./run_mvp.sh --camera 1 --microphone auto
 ```
+
+`--microphone auto` là mặc định và tự ưu tiên microphone tích hợp theo tên thiết
+bị, nên không phụ thuộc index AVFoundation. Khi cần, vẫn có thể truyền index hoặc
+tên chính xác, ví dụ `--microphone 2` hoặc
+`--microphone "MacBook Pro Microphone"`.
 
 Điều khiển trong cửa sổ camera:
 

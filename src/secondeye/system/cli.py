@@ -357,7 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="What objects are directly in front of me?",
         help="Câu hỏi dùng khi nhấn v",
     )
-    demo.add_argument("--microphone", default="1", help="Chỉ số audio AVFoundation")
+    demo.add_argument(
+        "--microphone",
+        default="auto",
+        help="auto (mặc định), chỉ số hoặc tên microphone AVFoundation",
+    )
     demo.add_argument("--listen-seconds", type=float, default=4.0)
     demo.add_argument(
         "--max-seconds",

@@ -6,7 +6,12 @@ import wave
 import numpy as np
 import pytest
 
-from secondeye.multimodal.speech import WhisperSpeechToText
+import secondeye.multimodal.speech as speech_module
+from secondeye.multimodal.speech import (
+    FFmpegMicrophoneRecorder,
+    WhisperSpeechToText,
+    list_avfoundation_audio_devices,
+)
 from secondeye.accelerator import accelerator_guard
 from secondeye.system.audio import PriorityAudioManager
 from secondeye.system.demo import SemanticCommand, SemanticWorker
@@ -119,6 +124,126 @@ def test_stt_abstains_on_quiet_wav_before_loading_whisper(tmp_path):
     assert result["abstained"] is True
     assert result["reason"] == "audio_too_quiet"
     assert result["transcript"] == ""
+
+
+_AVFOUNDATION_LISTING = """
+[AVFoundation indev @ 0x1] AVFoundation video devices:
+[AVFoundation indev @ 0x1] [0] FaceTime HD Camera
+[AVFoundation indev @ 0x1] AVFoundation audio devices:
+[AVFoundation indev @ 0x1] [0] nắng Microphone
+[AVFoundation indev @ 0x1] [1] AirPods của lê
+[AVFoundation indev @ 0x1] [2] MacBook Pro Microphone
+[AVFoundation indev @ 0x1] [3] Microsoft Teams Audio
+"""
+
+
+def test_avfoundation_device_listing_parses_audio_only(monkeypatch):
+    monkeypatch.setattr(
+        speech_module.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Completed", (), {"returncode": 1, "stderr": _AVFOUNDATION_LISTING, "stdout": ""}
+        )(),
+    )
+
+    devices = list_avfoundation_audio_devices("ffmpeg")
+
+    assert [(item.index, item.name) for item in devices] == [
+        ("0", "nắng Microphone"),
+        ("1", "AirPods của lê"),
+        ("2", "MacBook Pro Microphone"),
+        ("3", "Microsoft Teams Audio"),
+    ]
+
+
+def test_auto_microphone_resolves_builtin_device_by_name(
+    monkeypatch, tmp_path
+):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if "-list_devices" in command:
+            return type(
+                "Completed",
+                (),
+                {"returncode": 1, "stderr": _AVFOUNDATION_LISTING, "stdout": ""},
+            )()
+        (tmp_path / "recording.wav").write_bytes(b"RIFF")
+        return type(
+            "Completed", (), {"returncode": 0, "stderr": "", "stdout": ""}
+        )()
+
+    monkeypatch.setattr(speech_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(speech_module.shutil, "which", lambda name: "/opt/ffmpeg")
+    monkeypatch.setattr(speech_module.subprocess, "run", fake_run)
+    recorder = FFmpegMicrophoneRecorder(duration_seconds=1.0)
+
+    assert recorder.record(tmp_path / "recording.wav").is_file()
+    assert recorder.selected_device is not None
+    assert recorder.selected_device.index == "2"
+    assert recorder.selected_device.name == "MacBook Pro Microphone"
+    assert commands[-1][commands[-1].index("-i") + 1] == ":2"
+
+
+def test_microphone_can_be_selected_by_exact_name(monkeypatch):
+    monkeypatch.setattr(speech_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(speech_module.shutil, "which", lambda name: "/opt/ffmpeg")
+    monkeypatch.setattr(
+        speech_module.subprocess,
+        "run",
+        lambda *args, **kwargs: type(
+            "Completed", (), {"returncode": 1, "stderr": _AVFOUNDATION_LISTING, "stdout": ""}
+        )(),
+    )
+    recorder = FFmpegMicrophoneRecorder(device="nắng Microphone")
+
+    selected = recorder._resolve_device()
+
+    assert selected.index == "0"
+    assert selected.name == "nắng Microphone"
+
+
+def test_explicit_microphone_index_remains_supported(monkeypatch, tmp_path):
+    def fake_run(command, **kwargs):
+        assert "-list_devices" not in command
+        (tmp_path / "explicit.wav").write_bytes(b"RIFF")
+        return type(
+            "Completed", (), {"returncode": 0, "stderr": "", "stdout": ""}
+        )()
+
+    monkeypatch.setattr(speech_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(speech_module.shutil, "which", lambda name: "/opt/ffmpeg")
+    monkeypatch.setattr(speech_module.subprocess, "run", fake_run)
+
+    recorder = FFmpegMicrophoneRecorder(device="7", duration_seconds=1.0)
+
+    assert recorder.record(tmp_path / "explicit.wav").is_file()
+    assert recorder.selected_device is not None
+    assert recorder.selected_device.index == "7"
+
+
+def test_microphone_record_timeout_is_reported(monkeypatch, tmp_path):
+    def timeout(*args, **kwargs):
+        raise speech_module.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(speech_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(speech_module.shutil, "which", lambda name: "/opt/ffmpeg")
+    monkeypatch.setattr(speech_module.subprocess, "run", timeout)
+    recorder = FFmpegMicrophoneRecorder(device="2", duration_seconds=1.0)
+
+    with pytest.raises(RuntimeError, match="không trả dữ liệu"):
+        recorder.record(tmp_path / "timeout.wav")
+
+
+def test_microphone_discovery_timeout_is_reported(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise speech_module.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(speech_module.subprocess, "run", timeout)
+
+    with pytest.raises(RuntimeError, match="dò danh sách microphone"):
+        list_avfoundation_audio_devices("ffmpeg", timeout_seconds=0.01)
 
 
 def test_unicode_overlay_renders_vietnamese_without_question_mark_substitution():

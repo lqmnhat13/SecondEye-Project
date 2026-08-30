@@ -252,6 +252,7 @@ def test_demo_cli_enables_all_pretrained_mvp_features():
     assert args.priority_audio is True
     assert args.semantic_device == "cpu"
     assert args.max_depth_age == 1.5
+    assert args.microphone == "auto"
 
 
 def test_quality_gate_rejects_dark_or_blurry_frames():
