@@ -10,6 +10,7 @@ from secondeye.multimodal.speech import (
     localize_vqa_answer,
     normalize_vietnamese_speech,
 )
+from secondeye.multimodal.translation import PretrainedEnglishVietnameseTranslator
 from secondeye.system.camera import AsyncVisionRuntime, LatestFrameBuffer
 from secondeye.system.cli import build_parser
 from secondeye.system.orchestrator import SystemOrchestrator, SystemState
@@ -115,6 +116,15 @@ class _FakeEnglishVqa:
         return {"answer": "black shirt", "question": question, "abstained": False}
 
 
+class _FakeUnsupportedEnglishVqa:
+    def ask_bgr(self, image, question):
+        return {
+            "answer": "an unusual abstract sculpture",
+            "question": question,
+            "abstained": False,
+        }
+
+
 class _FakeTranslator:
     def translate(self, text):
         assert text == "black shirt"
@@ -122,6 +132,16 @@ class _FakeTranslator:
             "model": "fake-en-vi",
             "source": text,
             "translation": "áo sơ mi màu đen",
+            "quality_assured": True,
+        }
+
+
+class _FakeUnverifiedTranslator:
+    def translate(self, text):
+        return {
+            "source": text,
+            "translation": "bản dịch chưa kiểm chứng",
+            "quality_assured": False,
         }
 
 
@@ -170,6 +190,67 @@ def test_second_eye_system_translates_unknown_english_vqa_answer():
     assert result["localization_abstained"] is False
     assert result["abstained"] is False
     assert tts.messages == [("áo sơ mi màu đen", False)]
+
+
+def test_second_eye_system_uses_safe_visual_translation_without_model():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        vqa=_FakeEnglishVqa(),
+        translator=PretrainedEnglishVietnameseTranslator(),
+        tts=tts,
+    )
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    image = np.repeat(pattern[:, :, None], 3, axis=2)
+
+    result = system.ask(image, "What is the person wearing?")
+
+    assert result["spoken_answer_vi"] == "áo sơ mi màu đen"
+    assert result["translation_used"] is True
+    assert result["translation"]["method"] == "visual_lexicon_v1"
+    assert result["translation"]["quality_assured"] is True
+    assert result["abstained"] is False
+    assert tts.messages == [("áo sơ mi màu đen", False)]
+
+
+def test_second_eye_system_abstains_instead_of_speaking_unverified_translation():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        vqa=_FakeUnsupportedEnglishVqa(),
+        translator=PretrainedEnglishVietnameseTranslator(),
+        tts=tts,
+    )
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    image = np.repeat(pattern[:, :, None], 3, axis=2)
+
+    result = system.ask(image, "What is visible?")
+
+    assert result["translation_used"] is False
+    assert result["localization_abstained"] is True
+    assert result["abstained"] is True
+    assert "ngoài miền dịch thị giác an toàn" in result["translation_error"]
+    assert tts.messages == [("Không dịch được câu trả lời sang tiếng Việt.", False)]
+
+
+def test_second_eye_system_rejects_translation_without_quality_assurance():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        vqa=_FakeEnglishVqa(),
+        translator=_FakeUnverifiedTranslator(),
+        tts=tts,
+    )
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    image = np.repeat(pattern[:, :, None], 3, axis=2)
+
+    result = system.ask(image, "What is the person wearing?")
+
+    assert result["translation_used"] is False
+    assert result["translation"]["quality_assured"] is False
+    assert result["abstained"] is True
+    assert "chưa được kiểm chứng chất lượng" in result["translation_error"]
+    assert tts.messages == [("Không dịch được câu trả lời sang tiếng Việt.", False)]
 
 
 def test_latest_frame_buffer_drops_stale_frames():

@@ -182,11 +182,12 @@ secondeye-detection camera-demo --camera 0
 - `near/medium/far` là độ sâu tương đối theo frame, không phải mét.
 - Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
 - TTS mặc định dùng giọng `Linh` (`vi_VN`) ở tốc độ 165 từ/phút.
-- Câu trả lời VQA phổ biến được ánh xạ nhanh sang tiếng Việt; câu tiếng Anh ngoài
-  từ điển được model pretrained `Helsinki-NLP/opus-mt-en-vi` dịch local trước khi đọc.
+- Câu trả lời VQA ngắn được dịch bằng từ vựng và mẫu câu thị giác có kiểm soát.
+  Câu ngoài miền hỗ trợ bị từ chối thay vì phát một bản dịch chưa kiểm chứng;
+  Marian chỉ còn là fallback thử nghiệm và mặc định bị tắt.
 - Overlay camera dùng font Unicode qua Pillow nên hiển thị đầy đủ dấu tiếng Việt.
-- Trong camera MVP, YOLO/depth dùng Apple MPS; BLIP, Whisper và model dịch được
-  cố định trên CPU để tránh Metal command-buffer crash giữa các worker thread.
+- Trong camera MVP, YOLO/depth dùng Apple MPS; BLIP và Whisper được cố định trên
+  CPU để tránh Metal command-buffer crash giữa các worker thread.
 
 ## Cấu trúc source public
 

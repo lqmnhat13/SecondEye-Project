@@ -212,6 +212,7 @@ class SecondEyeSystem:
         answer = str(result["answer"])
         spoken_answer, localization_abstained = localize_vqa_answer(answer)
         translation: dict[str, object] | None = None
+        translation_used = False
         translation_error: str | None = None
         if localization_abstained and not bool(result.get("abstained")):
             if self.translator is None:
@@ -219,8 +220,11 @@ class SecondEyeSystem:
             else:
                 try:
                     translation = self.translator.translate(answer)
+                    if translation.get("quality_assured") is not True:
+                        raise RuntimeError("Bản dịch chưa được kiểm chứng chất lượng")
                     spoken_answer = str(translation["translation"]).strip()
                     localization_abstained = not bool(spoken_answer)
+                    translation_used = not localization_abstained
                 except Exception as exc:
                     translation_error = f"{type(exc).__name__}: {exc}"
                     spoken_answer = "Không dịch được câu trả lời sang tiếng Việt."
@@ -229,7 +233,7 @@ class SecondEyeSystem:
             **result,
             "spoken_answer_vi": spoken_answer,
             "localization_abstained": localization_abstained,
-            "translation_used": translation is not None,
+            "translation_used": translation_used,
             "translation": translation,
             "translation_error": translation_error,
             "abstained": bool(result.get("abstained")) or localization_abstained,
