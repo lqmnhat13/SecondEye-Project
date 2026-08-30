@@ -1,6 +1,10 @@
 import pytest
 
-from secondeye.detection.risk import Direction, assess_detection_only, direction_from_bbox
+from secondeye.detection.risk import (
+    Direction,
+    assess_detection_only,
+    direction_from_bbox,
+)
 
 
 @pytest.mark.parametrize(
@@ -12,7 +16,10 @@ from secondeye.detection.risk import Direction, assess_detection_only, direction
     ],
 )
 def test_direction_from_bbox_uses_box_center(bbox, expected):
-    assert direction_from_bbox(bbox, image_width=1000, central_zone_fraction=0.4) is expected
+    assert (
+        direction_from_bbox(bbox, image_width=1000, central_zone_fraction=0.4)
+        is expected
+    )
 
 
 def test_direction_rejects_invalid_parameters():
@@ -56,4 +63,3 @@ def test_detection_only_rejects_non_candidates(label, confidence, bbox, reason):
     )
     assert result.is_candidate is False
     assert result.reason == reason
-

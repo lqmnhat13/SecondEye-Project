@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
+import wave
+import array
+import math
 from pathlib import Path
+
+from secondeye.accelerator import accelerator_guard
 
 
 _SPEECH_REPLACEMENTS = {
@@ -19,6 +25,9 @@ _SPEECH_REPLACEMENTS = {
 }
 
 _VQA_VIETNAMESE = {
+    "a": "một",
+    "an": "một",
+    "and": "và",
     "zero": "không",
     "one": "một",
     "two": "hai",
@@ -35,16 +44,38 @@ _VQA_VIETNAMESE = {
     "left": "bên trái",
     "right": "bên phải",
     "center": "ở giữa",
+    "blue": "xanh dương",
+    "red": "đỏ",
+    "black": "đen",
+    "white": "trắng",
+    "green": "xanh lá",
+    "yellow": "vàng",
+    "brown": "nâu",
+    "gray": "xám",
+    "grey": "xám",
+    "orange": "cam",
+    "pink": "hồng",
+    "purple": "tím",
+    "tan": "nâu nhạt",
+    "multicolored": "nhiều màu",
+    "blue and white": "xanh dương và trắng",
+    "black and white": "đen và trắng",
+    "red and white": "đỏ và trắng",
     "person": "người",
     "people": "người",
+    "man": "người đàn ông",
+    "woman": "người phụ nữ",
     "chair": "ghế",
+    "chairs": "ghế",
     "table": "bàn",
+    "tables": "bàn",
     "sofa": "ghế sofa",
     "bed": "giường",
     "backpack": "ba lô",
     "handbag": "túi xách",
     "suitcase": "va li",
     "bottle": "chai",
+    "bottles": "chai",
     "plant": "chậu cây",
     "television": "ti vi",
     "tv": "ti vi",
@@ -52,6 +83,76 @@ _VQA_VIETNAMESE = {
     "toilet": "bồn cầu",
     "sink": "bồn rửa",
     "refrigerator": "tủ lạnh",
+    "bus": "xe buýt",
+    "car": "ô tô",
+    "truck": "xe tải",
+    "bicycle": "xe đạp",
+    "bike": "xe đạp",
+    "motorcycle": "xe máy",
+    "motorbike": "xe máy",
+    "train": "tàu hỏa",
+    "airplane": "máy bay",
+    "plane": "máy bay",
+    "boat": "thuyền",
+    "bench": "ghế băng",
+    "umbrella": "ô",
+    "bird": "chim",
+    "cat": "mèo",
+    "dog": "chó",
+    "horse": "ngựa",
+    "cow": "bò",
+    "sheep": "cừu",
+    "elephant": "voi",
+    "bear": "gấu",
+    "zebra": "ngựa vằn",
+    "giraffe": "hươu cao cổ",
+    "cup": "cốc",
+    "glass": "ly",
+    "bowl": "bát",
+    "fork": "nĩa",
+    "knife": "dao",
+    "spoon": "thìa",
+    "plate": "đĩa",
+    "banana": "chuối",
+    "apple": "táo",
+    "sandwich": "bánh mì kẹp",
+    "broccoli": "bông cải xanh",
+    "carrot": "cà rốt",
+    "pizza": "bánh pizza",
+    "donut": "bánh vòng",
+    "cake": "bánh ngọt",
+    "clock": "đồng hồ",
+    "vase": "bình hoa",
+    "book": "sách",
+    "books": "sách",
+    "scissors": "kéo",
+    "mouse": "chuột máy tính",
+    "keyboard": "bàn phím",
+    "phone": "điện thoại",
+    "cellphone": "điện thoại",
+    "microwave": "lò vi sóng",
+    "oven": "lò nướng",
+    "toaster": "máy nướng bánh mì",
+    "clothes": "quần áo",
+    "shirt": "áo sơ mi",
+    "t-shirt": "áo thun",
+    "pants": "quần dài",
+    "jeans": "quần jean",
+    "dress": "váy",
+    "jacket": "áo khoác",
+    "coat": "áo khoác dài",
+    "hat": "mũ",
+    "shoes": "giày",
+    "shorts": "quần đùi",
+    "sitting": "đang ngồi",
+    "standing": "đang đứng",
+    "walking": "đang đi bộ",
+    "running": "đang chạy",
+    "eating": "đang ăn",
+    "drinking": "đang uống",
+    "holding": "đang cầm",
+    "playing": "đang chơi",
+    "riding": "đang đi xe",
 }
 
 
@@ -64,20 +165,21 @@ def normalize_vietnamese_speech(text: str) -> str:
 
 
 def localize_vqa_answer(answer: str) -> tuple[str, bool]:
-    """Translate safe short BLIP answers; abstain from reading unknown English."""
+    """Translate common short BLIP answers and flag text needing the full model."""
     normalized = " ".join(answer.strip().lower().split())
     if not normalized:
         return "Tôi chưa đủ chắc chắn để trả lời.", True
     if normalized in _VQA_VIETNAMESE:
         return _VQA_VIETNAMESE[normalized], False
     words = re.findall(r"[a-z]+", normalized)
-    if words and all(word in _VQA_VIETNAMESE for word in words):
+    if (
+        " and " in normalized
+        and words
+        and all(word in _VQA_VIETNAMESE for word in words)
+    ):
         return " ".join(_VQA_VIETNAMESE[word] for word in words), False
     if words and normalized.isascii():
-        return (
-            "Tôi đã có kết quả bằng tiếng Anh nhưng chưa thể đọc tiếng Việt chính xác.",
-            True,
-        )
+        return answer.strip(), True
     return normalize_vietnamese_speech(answer), False
 
 
@@ -145,38 +247,157 @@ class WhisperSpeechToText:
     """Pretrained Whisper adapter for recorded local audio files."""
 
     def __init__(
-        self, model_name: str = "openai/whisper-small", device: str = "auto"
+        self,
+        model_name: str = "openai/whisper-small",
+        device: str = "auto",
+        minimum_wav_rms: float = 0.015,
     ) -> None:
-        try:
-            import torch
-            from transformers import pipeline
-        except ImportError as exc:
-            raise RuntimeError(
-                'Thiếu STT runtime. Chạy: python -m pip install ".[multimodal]"'
-            ) from exc
-        if device == "auto":
-            if torch.cuda.is_available():
-                device = "cuda:0"
-            elif torch.backends.mps.is_available():
-                device = "mps"
-            else:
-                device = "cpu"
+        if minimum_wav_rms < 0:
+            raise ValueError("minimum_wav_rms không được âm")
         self.model_name = model_name
-        self.pipeline = pipeline(
-            "automatic-speech-recognition", model=model_name, device=device
-        )
+        self.requested_device = device
+        self.minimum_wav_rms = minimum_wav_rms
+        self.pipeline = None
+        self.device: str | None = None
+        self._torch = None
+        self._lock = threading.Lock()
+
+    def _get_pipeline(self):
+        with self._lock:
+            if self.pipeline is not None:
+                return self.pipeline
+            try:
+                import torch
+                from transformers import pipeline
+            except ImportError as exc:
+                raise RuntimeError(
+                    'Thiếu STT runtime. Chạy: python -m pip install ".[multimodal]"'
+                ) from exc
+            device = self.requested_device
+            if device == "auto":
+                if torch.cuda.is_available():
+                    device = "cuda:0"
+                elif torch.backends.mps.is_available():
+                    device = "mps"
+                else:
+                    device = "cpu"
+            with accelerator_guard(device, torch):
+                self.pipeline = pipeline(
+                    "automatic-speech-recognition",
+                    model=self.model_name,
+                    device=device,
+                )
+            self.device = device
+            self._torch = torch
+            return self.pipeline
+
+    @staticmethod
+    def _wav_quality(audio_path: Path) -> dict[str, float] | None:
+        try:
+            with wave.open(str(audio_path), "rb") as stream:
+                frames = stream.readframes(stream.getnframes())
+                width = stream.getsampwidth()
+                duration = stream.getnframes() / max(1, stream.getframerate())
+        except (wave.Error, OSError):
+            return None
+        if not frames or width <= 0:
+            return {"duration_seconds": round(duration, 3), "rms": 0.0}
+        sample_types = {1: "B", 2: "h", 4: "i"}
+        sample_type = sample_types.get(width)
+        if sample_type is None:
+            return None
+        samples = array.array(sample_type)
+        samples.frombytes(frames)
+        if width == 1:
+            centered = (float(value) - 128.0 for value in samples)
+            maximum = 128.0
+        else:
+            centered = (float(value) for value in samples)
+            maximum = float(1 << (8 * width - 1))
+        squared_sum = sum(value * value for value in centered)
+        rms = math.sqrt(squared_sum / max(1, len(samples))) / maximum
+        return {"duration_seconds": round(duration, 3), "rms": round(rms, 6)}
 
     def transcribe(self, audio_path: Path) -> dict[str, object]:
         audio_path = audio_path.expanduser().resolve()
         if not audio_path.is_file():
             raise FileNotFoundError(audio_path)
+        quality = self._wav_quality(audio_path)
+        if quality is not None and quality["rms"] < self.minimum_wav_rms:
+            return {
+                "schema_version": "1.0",
+                "module": "stt",
+                "success": True,
+                "model": self.model_name,
+                "device": self.requested_device,
+                "transcript": "",
+                "abstained": True,
+                "reason": "audio_too_quiet",
+                "audio_quality": quality,
+                "latency_ms": 0.0,
+            }
         started = time.perf_counter()
-        result = self.pipeline(str(audio_path), generate_kwargs={"language": "vi"})
+        speech_pipeline = self._get_pipeline()
+        with accelerator_guard(self.device, self._torch):
+            result = speech_pipeline(
+                str(audio_path), generate_kwargs={"language": "vi"}
+            )
         return {
             "schema_version": "1.0",
             "module": "stt",
             "success": True,
             "model": self.model_name,
+            "device": self.device,
             "transcript": str(result.get("text", "")).strip(),
+            "abstained": False,
+            "audio_quality": quality,
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
         }
+
+
+class FFmpegMicrophoneRecorder:
+    """Record a short push-to-talk WAV from a macOS AVFoundation audio device."""
+
+    def __init__(self, device: str = "1", duration_seconds: float = 4.0) -> None:
+        if platform.system() != "Darwin":
+            raise RuntimeError("Thu microphone hiện chỉ hỗ trợ macOS")
+        if duration_seconds <= 0:
+            raise ValueError("Thời lượng thu microphone phải dương")
+        executable = shutil.which("ffmpeg")
+        if executable is None:
+            raise RuntimeError("Thiếu ffmpeg. Cài bằng: brew install ffmpeg")
+        self.executable = executable
+        self.device = str(device).strip()
+        self.duration_seconds = duration_seconds
+
+    def record(self, output_path: Path) -> Path:
+        output_path = output_path.expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            self.executable,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "avfoundation",
+            "-i",
+            f":{self.device}",
+            "-t",
+            str(self.duration_seconds),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-y",
+            str(output_path),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode != 0 or not output_path.is_file():
+            detail = completed.stderr.strip().splitlines()
+            message = detail[-1] if detail else "không rõ lỗi"
+            raise RuntimeError(
+                "Không thu được microphone. Kiểm tra quyền Microphone và chỉ số thiết bị: "
+                + message
+            )
+        return output_path

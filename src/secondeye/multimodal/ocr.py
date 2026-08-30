@@ -44,7 +44,9 @@ class PaddleOcrReader:
                     {
                         "text": str(text).strip(),
                         "confidence": None if score is None else round(score, 4),
-                        "box": None if box is None else getattr(box, "tolist", lambda: box)(),
+                        "box": None
+                        if box is None
+                        else getattr(box, "tolist", lambda: box)(),
                     }
                 )
         transcript = " ".join(line["text"] for line in lines if line["text"])

@@ -2,7 +2,12 @@
 
 from .config import DetectionPipelineConfig, load_detection_config
 from .model import Detection, ObjectObstacleDetector
-from .risk import Direction, ObstacleCandidate, assess_detection_only, direction_from_bbox
+from .risk import (
+    Direction,
+    ObstacleCandidate,
+    assess_detection_only,
+    direction_from_bbox,
+)
 
 __all__ = [
     "Detection",

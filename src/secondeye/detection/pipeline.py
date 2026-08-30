@@ -119,7 +119,9 @@ def _verify_onnx(path: Path, config: DetectionPipelineConfig) -> None:
     onnx.checker.check_model(onnx.load(str(path)))
     onnx_model = yolo_class(str(path), task="detect")
     ensure_class_schema(onnx_model.names, config.class_names)
-    dummy = np.zeros((config.model.image_size, config.model.image_size, 3), dtype=np.uint8)
+    dummy = np.zeros(
+        (config.model.image_size, config.model.image_size, 3), dtype=np.uint8
+    )
     results = onnx_model.predict(
         source=dummy,
         imgsz=config.model.image_size,
@@ -347,7 +349,9 @@ def command_evaluate(args: argparse.Namespace, config: DetectionPipelineConfig) 
         split = "test" if stats["test"].images else "val"
     if split == "test" and not stats["test"].images:
         raise ValueError("Dataset không có test split")
-    output_parent = (args.output or Path("results/detection_evaluation.json")).resolve().parent
+    output_parent = (
+        (args.output or Path("results/detection_evaluation.json")).resolve().parent
+    )
     dataset_yaml = write_dataset_yaml(
         dataset_root,
         config.class_names,
@@ -377,8 +381,10 @@ def command_export(args: argparse.Namespace, config: DetectionPipelineConfig) ->
     ensure_class_schema(model.names, config.class_names)
     onnx_path = _export_onnx(model, config)
     output_dir = (
-        args.output_dir or config.paths.artifact_root / _run_id("export")
-    ).expanduser().resolve()
+        (args.output_dir or config.paths.artifact_root / _run_id("export"))
+        .expanduser()
+        .resolve()
+    )
     output_dir.mkdir(parents=True, exist_ok=False)
     copied_pt = output_dir / "best.pt"
     copied_onnx = output_dir / "model.onnx"
@@ -456,7 +462,9 @@ def command_camera(args: argparse.Namespace, config: DetectionPipelineConfig) ->
         cv2.destroyAllWindows()
 
 
-def command_camera_demo(args: argparse.Namespace, config: DetectionPipelineConfig) -> None:
+def command_camera_demo(
+    args: argparse.Namespace, config: DetectionPipelineConfig
+) -> None:
     """Run the configured pretrained COCO model on a local camera without training."""
     cv2, torch, yolo_class = require_detection_runtime()
     device = select_device(config.model.device, torch)
@@ -526,7 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--destination", type=Path)
     prepare.set_defaults(handler=command_prepare)
 
-    validate = subparsers.add_parser("validate", help="Kiểm tra dataset trước khi train")
+    validate = subparsers.add_parser(
+        "validate", help="Kiểm tra dataset trước khi train"
+    )
     validate.add_argument("--dataset", type=Path)
     validate.add_argument("--output", type=Path)
     validate.set_defaults(handler=command_validate)
@@ -539,7 +549,9 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--output-image", type=Path)
     demo.set_defaults(handler=command_demo)
 
-    train = subparsers.add_parser("train", help="Train, evaluate, export và đóng gói model")
+    train = subparsers.add_parser(
+        "train", help="Train, evaluate, export và đóng gói model"
+    )
     train.add_argument("--dataset", type=Path)
     train.add_argument("--name")
     train.add_argument("--no-export", action="store_true")
@@ -570,7 +582,8 @@ def build_parser() -> argparse.ArgumentParser:
     camera.set_defaults(handler=command_camera)
 
     camera_demo = subparsers.add_parser(
-        "camera-demo", help="Mở camera bằng schema indoor COCO pretrained, không cần train"
+        "camera-demo",
+        help="Mở camera bằng schema indoor COCO pretrained, không cần train",
     )
     camera_demo.add_argument("--camera", type=int, default=0)
     camera_demo.set_defaults(handler=command_camera_demo)

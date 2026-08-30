@@ -156,16 +156,22 @@ def _validate_box(fields: list[str], class_count: int, location: str) -> int:
         or y_center - height / 2 < -tolerance
         or y_center + height / 2 > 1 + tolerance
     ):
-        raise DatasetValidationError(f"{location}: bbox vượt ra ngoài biên ảnh chuẩn hóa")
+        raise DatasetValidationError(
+            f"{location}: bbox vượt ra ngoài biên ảnh chuẩn hóa"
+        )
     return class_id
 
 
-def validate_split(dataset_root: Path, split: str, class_names: Sequence[str]) -> SplitStats:
+def validate_split(
+    dataset_root: Path, split: str, class_names: Sequence[str]
+) -> SplitStats:
     """Validate one split, including image decoding and every label row."""
     try:
         import cv2
     except ImportError as exc:  # pragma: no cover - depends on optional installation
-        raise RuntimeError('Thiếu OpenCV. Chạy: python -m pip install ".[detection]"') from exc
+        raise RuntimeError(
+            'Thiếu OpenCV. Chạy: python -m pip install ".[detection]"'
+        ) from exc
 
     image_root = dataset_root / "images" / split
     label_root = dataset_root / "labels" / split
@@ -179,7 +185,9 @@ def validate_split(dataset_root: Path, split: str, class_names: Sequence[str]) -
 
     image_map = _image_keys(image_root, images)
     label_files = sorted(label_root.rglob("*.txt"))
-    label_map = {path.relative_to(label_root).with_suffix(""): path for path in label_files}
+    label_map = {
+        path.relative_to(label_root).with_suffix(""): path for path in label_files
+    }
     orphan_labels = sorted(set(label_map) - set(image_map))
     if orphan_labels:
         preview = ", ".join(str(key) for key in orphan_labels[:5])
@@ -237,7 +245,9 @@ def validate_no_split_leakage(dataset_root: Path, splits: Sequence[str]) -> None
     for split in splits:
         for image_path in image_files(dataset_root / "images" / split):
             hashes[sha256_file(image_path)].append((split, image_path))
-    leaks = [items for items in hashes.values() if len({split for split, _ in items}) > 1]
+    leaks = [
+        items for items in hashes.values() if len({split for split, _ in items}) > 1
+    ]
     if leaks:
         rendered = []
         for items in leaks[:10]:
@@ -247,7 +257,9 @@ def validate_no_split_leakage(dataset_root: Path, splits: Sequence[str]) -> None
         )
 
 
-def validate_dataset(dataset_root: Path, class_names: Sequence[str]) -> dict[str, SplitStats]:
+def validate_dataset(
+    dataset_root: Path, class_names: Sequence[str]
+) -> dict[str, SplitStats]:
     """Validate all available splits and return reproducible statistics."""
     dataset_root = dataset_root.expanduser().resolve()
     if not dataset_root.is_dir():
@@ -275,7 +287,9 @@ def write_dataset_yaml(
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError('Thiếu PyYAML. Chạy: python -m pip install ".[detection]"') from exc
+        raise RuntimeError(
+            'Thiếu PyYAML. Chạy: python -m pip install ".[detection]"'
+        ) from exc
 
     payload: dict[str, object] = {
         "path": str(dataset_root.expanduser().resolve()),

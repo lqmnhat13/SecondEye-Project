@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from secondeye.accelerator import accelerator_guard
+
 from .config import DetectionPipelineConfig
 from .risk import assess_detection_only
 from .runtime import (
@@ -78,19 +80,20 @@ class PretrainedCocoDetector:
     def _predict_result(self, image: Any) -> tuple[Any, float]:
         ObjectObstacleDetector._validate_bgr(image)
         floor = min(self._thresholds.values())
-        synchronize_device(self.device, self._torch)
-        started = time.perf_counter()
-        with self._lock:
-            results = self.model.predict(
-                source=image,
-                conf=floor,
-                iou=self.config.model.iou_threshold,
-                imgsz=self.config.model.image_size,
-                device=self.device,
-                verbose=False,
-            )
-        synchronize_device(self.device, self._torch)
-        latency_ms = (time.perf_counter() - started) * 1000.0
+        with accelerator_guard(self.device, self._torch):
+            synchronize_device(self.device, self._torch)
+            started = time.perf_counter()
+            with self._lock:
+                results = self.model.predict(
+                    source=image,
+                    conf=floor,
+                    iou=self.config.model.iou_threshold,
+                    imgsz=self.config.model.image_size,
+                    device=self.device,
+                    verbose=False,
+                )
+            synchronize_device(self.device, self._torch)
+            latency_ms = (time.perf_counter() - started) * 1000.0
         if len(results) != 1:
             raise RuntimeError(f"Cần đúng một inference result, nhận {len(results)}")
         return results[0], latency_ms
@@ -182,8 +185,10 @@ class ObjectObstacleDetector:
         if not weights.is_file():
             raise FileNotFoundError(weights)
         requested_device = config.model.device
-        self.device = "cpu" if weights.suffix.lower() == ".onnx" else select_device(
-            requested_device, torch
+        self.device = (
+            "cpu"
+            if weights.suffix.lower() == ".onnx"
+            else select_device(requested_device, torch)
         )
         self._torch = torch
         self.model = yolo_class(str(weights), task="detect")
@@ -213,25 +218,27 @@ class ObjectObstacleDetector:
         import numpy as np
 
         dummy = np.zeros(
-            (self.config.model.image_size, self.config.model.image_size, 3), dtype=np.uint8
+            (self.config.model.image_size, self.config.model.image_size, 3),
+            dtype=np.uint8,
         )
         self._predict_result(dummy)
 
     def _predict_result(self, image: Any) -> tuple[Any, float]:
         self._validate_bgr(image)
-        synchronize_device(self.device, self._torch)
-        started = time.perf_counter()
-        with self._lock:
-            results = self.model.predict(
-                source=image,
-                conf=self.config.model.confidence_threshold,
-                iou=self.config.model.iou_threshold,
-                imgsz=self.config.model.image_size,
-                device=self.device,
-                verbose=False,
-            )
-        synchronize_device(self.device, self._torch)
-        latency_ms = (time.perf_counter() - started) * 1000.0
+        with accelerator_guard(self.device, self._torch):
+            synchronize_device(self.device, self._torch)
+            started = time.perf_counter()
+            with self._lock:
+                results = self.model.predict(
+                    source=image,
+                    conf=self.config.model.confidence_threshold,
+                    iou=self.config.model.iou_threshold,
+                    imgsz=self.config.model.image_size,
+                    device=self.device,
+                    verbose=False,
+                )
+            synchronize_device(self.device, self._torch)
+            latency_ms = (time.perf_counter() - started) * 1000.0
         if len(results) != 1:
             raise RuntimeError(f"Cần đúng một inference result, nhận {len(results)}")
         return results[0], latency_ms

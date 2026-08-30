@@ -21,10 +21,9 @@ def discover_project_root() -> Path:
             if candidate in visited:
                 continue
             visited.add(candidate)
-            if (
-                (candidate / "pyproject.toml").is_file()
-                and (candidate / "configs" / "pretrained_indoor.toml").is_file()
-            ):
+            if (candidate / "pyproject.toml").is_file() and (
+                candidate / "configs" / "pretrained_indoor.toml"
+            ).is_file():
                 return candidate
     return Path.cwd().resolve()
 
@@ -169,7 +168,9 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
         raise ValueError("pretrained_coco.class_mapping chứa lớp rỗng/ngoài schema")
     mapped_classes = tuple(target for _, target in class_mapping)
     if len(mapped_classes) != len(set(mapped_classes)):
-        raise ValueError("pretrained_coco.class_mapping không được ánh xạ trùng lớp đích")
+        raise ValueError(
+            "pretrained_coco.class_mapping không được ánh xạ trùng lớp đích"
+        )
     unsupported_classes = tuple(
         str(name).strip()
         for name in pretrained_raw.get("unsupported_second_eye_classes", ())
@@ -242,9 +243,13 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
         training=training,
         export=export,
         paths=PathConfig(
-            dataset_root=_project_path(str(paths_raw["dataset_root"]), config_project_root),
+            dataset_root=_project_path(
+                str(paths_raw["dataset_root"]), config_project_root
+            ),
             runs_root=_project_path(str(paths_raw["runs_root"]), config_project_root),
-            artifact_root=_project_path(str(paths_raw["artifact_root"]), config_project_root),
+            artifact_root=_project_path(
+                str(paths_raw["artifact_root"]), config_project_root
+            ),
         ),
         class_names=class_names,
         candidate_classes=candidate_classes,

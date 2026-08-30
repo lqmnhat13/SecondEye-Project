@@ -70,4 +70,3 @@ def assess_detection_only(
     if direction is not Direction.CENTER:
         return ObstacleCandidate(False, direction, "outside_central_travel_zone")
     return ObstacleCandidate(True, direction, "central_detection_requires_depth")
-

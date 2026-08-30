@@ -1,8 +1,11 @@
 # SecondEye
 
-SecondEye là baseline tích hợp AI đa phương thức chạy local trên macOS. Phiên bản
-hiện tại **không fine-tune**: hệ thống ghép các model pretrained cho detection,
-relative depth, OCR, VQA, STT và TTS để hoàn thiện kiến trúc end-to-end trước.
+SecondEye là MVP tích hợp AI đa phương thức chạy local trên macOS. Phạm vi hiện
+tại chủ đích **không fine-tune**: hệ thống ghép các model pretrained cho
+detection, relative depth, OCR, VQA, STT và TTS. Việc hoàn thành MVP và các thí
+nghiệm hiện tại không phụ thuộc vào một checkpoint fine-tuned. Fine-tuning chỉ
+là hướng phát triển tương lai tùy chọn nếu sau này dự án có dữ liệu đã được rà
+soát đầy đủ và một câu hỏi nghiên cứu phù hợp.
 
 > **Cảnh báo an toàn:** Đây là prototype nghiên cứu, không phải thiết bị điều
 > hướng đã kiểm định và không thay thế gậy trắng, chó dẫn đường hoặc thiết bị hỗ
@@ -31,31 +34,24 @@ tv, laptop, toilet, sink, refrigerator
 ```
 
 Schema này cố ý không tuyên bố hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng
-rác. Các lớp an toàn đặc thù được bảo tồn local cho giai đoạn fine-tuning sau.
+rác. Taxonomy an toàn đặc thù và dữ liệu lịch sử được bảo tồn như tài sản nghiên
+cứu cho một nhánh mở rộng tương lai; chúng không phải đầu vào bắt buộc của MVP.
 
 ## Cài đặt
 
-Yêu cầu: Python 3.11 trên macOS Apple Silicon.
+Yêu cầu: Python 3.11 trên macOS Apple Silicon. Nên đặt runtime ngoài thư mục
+Documents/iCloud để model và dependency không bị macOS offload:
 
 ```bash
 cd /Users/lenhat/Documents/SecondEye-Project
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-
-# Detection, camera và test
-python -m pip install ".[dev,detection]"
-
-# Depth, VQA và Whisper STT
-python -m pip install ".[multimodal]"
-
-# OCR cài riêng vì PaddlePaddle là dependency lớn
-python -m pip install ".[ocr]"
+brew install ffmpeg
+./setup_mvp.sh
+source ~/Library/Caches/SecondEye/venv/bin/activate
 ```
 
-Không dùng `pip install -e` trên runtime Python hiện tại: bản vá bảo mật của
-Python bỏ qua editable `.pth` có tên ẩn, làm console script đôi lúc không import
-được `secondeye`. Sau khi sửa source, cài lại bằng lệnh thường ở trên.
+Runtime mặc định nằm tại `~/Library/Caches/SecondEye/venv`. Có thể đổi bằng biến
+`SECONDEYE_RUNTIME_DIR`. `setup_mvp.sh` cài detection, depth/VQA/STT, OCR và test,
+sau đó chạy `doctor` bằng import thật.
 
 Model pretrained được tải vào cache ở lần chạy đầu. Sau khi đã tải đủ model,
 các module local có thể chạy không cần gửi ảnh lên API.
@@ -68,6 +64,33 @@ pytest
 ```
 
 `doctor` chỉ kiểm tra dependency, không tải model.
+
+## Chạy MVP tích hợp
+
+Lệnh dưới đây mở một runtime duy nhất gồm cảnh báo vật cản, OCR, mô tả cảnh,
+VQA, push-to-talk, TTS ưu tiên và session log:
+
+```bash
+./run_mvp.sh --camera 0
+```
+
+Với iPhone Continuity Camera:
+
+```bash
+./run_mvp.sh --camera 1 --microphone 1
+```
+
+Điều khiển trong cửa sổ camera:
+
+- `o`: đọc chữ trong frame hiện tại.
+- `s`: mô tả ngắn dựa trên các vật thể detector thực sự nhìn thấy.
+- `v`: hỏi câu cấu hình bởi `--question`.
+- `m`: thu lệnh giọng nói trong 4 giây; hỗ trợ đọc chữ, mô tả, hỏi ảnh, dừng và lặp lại.
+- `r`: lặp lại phản hồi gần nhất; `x`: dừng âm thanh; `q`/`Esc`: thoát.
+
+OCR, VQA và Whisper được lazy-load ở lần dùng đầu để camera cảnh báo khởi động
+trước. Tác vụ ngữ nghĩa chạy ở worker riêng nên không chặn capture/UI hoặc worker
+an toàn. Log JSONL được lưu mặc định trong `logs/` và có thể đổi bằng `--log`.
 
 ## Chạy camera Mac hoặc iPhone
 
@@ -154,8 +177,11 @@ secondeye-detection camera-demo --camera 0
 - `near/medium/far` là độ sâu tương đối theo frame, không phải mét.
 - Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
 - TTS mặc định dùng giọng `Linh` (`vi_VN`) ở tốc độ 165 từ/phút.
-- Câu trả lời VQA ngắn được ánh xạ sang tiếng Việt; câu tiếng Anh chưa hỗ trợ sẽ
-  abstain thay vì đưa thẳng cho giọng Việt đọc sai.
+- Câu trả lời VQA phổ biến được ánh xạ nhanh sang tiếng Việt; câu tiếng Anh ngoài
+  từ điển được model pretrained `Helsinki-NLP/opus-mt-en-vi` dịch local trước khi đọc.
+- Overlay camera dùng font Unicode qua Pillow nên hiển thị đầy đủ dấu tiếng Việt.
+- Trong camera MVP, YOLO/depth dùng Apple MPS; BLIP, Whisper và model dịch được
+  cố định trên CPU để tránh Metal command-buffer crash giữa các worker thread.
 
 ## Cấu trúc source public
 
@@ -168,9 +194,14 @@ tests/                           unit tests không cần tải model
 scripts/fetch_smoke_asset.py     tải ảnh smoke test có thể tái tạo
 ```
 
-GitHub chỉ chứa source code, test, runtime config và README. Dataset, ảnh, model
-weights, log, artifact, báo cáo, DOCX/PDF và kết quả chạy được giữ local và bị
-`.gitignore` loại khỏi commit.
+Tài liệu local được phân loại và dẫn đường tại
+[`docs/README.md`](docs/README.md). Nhóm `docs/current/` và `docs/guides/` mô tả
+phạm vi đang dùng; tài liệu dữ liệu/taxonomy an toàn lịch sử nằm dưới
+`docs/research/data/` và không phải dependency của MVP pretrained.
+
+GitHub có thể chứa source code, test, runtime config và tài liệu Markdown công
+khai. Dataset, ảnh/model weights, log, artifact, tài liệu trong `docs/private/`,
+DOCX/PDF/XLSX và kết quả chạy được giữ local và bị `.gitignore` loại khỏi commit.
 
 ## Giới hạn đã biết
 
@@ -179,7 +210,9 @@ weights, log, artifact, báo cáo, DOCX/PDF và kết quả chạy được gi�
 - Relative monocular depth không cung cấp khoảng cách tuyệt đối.
 - PaddleOCR, BLIP và Whisper cần benchmark riêng trên dữ liệu tiếng Việt/thực tế.
 - Camera demo cần kiểm thử trực tiếp vì quyền camera và chỉ số thiết bị phụ thuộc macOS.
-- Fine-tuning và đánh giá test độc lập được hoãn đến sau khi integration ổn định.
+- Fine-tuning không thuộc phạm vi phiên bản hiện tại. Nếu được thực hiện trong
+  tương lai, đó sẽ là một nhánh nghiên cứu riêng với dataset/protocol mới được
+  duyệt; không mặc định là bước kế tiếp của MVP.
 
 Ultralytics được sử dụng theo điều kiện giấy phép tương ứng; cần rà giấy phép của
 từng model và dependency trước khi phát hành hoặc thương mại hóa.

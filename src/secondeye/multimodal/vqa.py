@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from secondeye.accelerator import accelerator_guard
+
 
 class PretrainedVisualQuestionAnswering:
     def __init__(
@@ -34,7 +36,9 @@ class PretrainedVisualQuestionAnswering:
         self.device = device
         self._torch = torch
         self.processor = BlipProcessor.from_pretrained(model_name)
-        self.model = BlipForQuestionAnswering.from_pretrained(model_name).to(device)
+        model = BlipForQuestionAnswering.from_pretrained(model_name)
+        with accelerator_guard(device, torch):
+            self.model = model.to(device)
         self.model.eval()
 
     def ask_bgr(self, image: Any, question: str) -> dict[str, object]:
@@ -51,21 +55,22 @@ class PretrainedVisualQuestionAnswering:
         inputs = self.processor(
             images=Image.fromarray(rgb), text=question, return_tensors="pt"
         )
-        inputs = {name: value.to(self.device) for name, value in inputs.items()}
-        with self._torch.inference_mode():
-            generated = self.model.generate(
-                **inputs,
-                max_new_tokens=20,
-                return_dict_in_generate=True,
-                output_scores=True,
-            )
-        raw_answer = self.processor.decode(
-            generated.sequences[0], skip_special_tokens=True
-        ).strip()
-        token_confidences = [
-            float(self._torch.softmax(scores[0], dim=-1).max().item())
-            for scores in generated.scores
-        ]
+        with accelerator_guard(self.device, self._torch):
+            inputs = {name: value.to(self.device) for name, value in inputs.items()}
+            with self._torch.inference_mode():
+                generated = self.model.generate(
+                    **inputs,
+                    max_new_tokens=20,
+                    return_dict_in_generate=True,
+                    output_scores=True,
+                )
+            raw_answer = self.processor.decode(
+                generated.sequences[0], skip_special_tokens=True
+            ).strip()
+            token_confidences = [
+                float(self._torch.softmax(scores[0], dim=-1).max().item())
+                for scores in generated.scores
+            ]
         score = (
             sum(token_confidences) / len(token_confidences)
             if token_confidences
@@ -82,6 +87,7 @@ class PretrainedVisualQuestionAnswering:
             "module": "vqa",
             "success": True,
             "model": self.model_name,
+            "device": self.device,
             "question": question,
             "answer": answer,
             "raw_answer": raw_answer,

@@ -55,13 +55,14 @@ class LatestFrameBuffer:
                 lambda: self._closed
                 or self._error is not None
                 or (
-                    self._packet is not None
-                    and self._packet.frame_id > after_frame_id
+                    self._packet is not None and self._packet.frame_id > after_frame_id
                 ),
                 timeout=timeout,
             )
             if self._error is not None:
-                raise RuntimeError(f"Camera capture lỗi: {self._error}") from self._error
+                raise RuntimeError(
+                    f"Camera capture lỗi: {self._error}"
+                ) from self._error
             if self._packet is None or self._packet.frame_id <= after_frame_id:
                 return None
             packet = self._packet

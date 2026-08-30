@@ -27,21 +27,22 @@ logs/
 *.xlsx
 *.xls
 *.zip
-PROJECT_STATUS.md
-docs/
-output/
-outputs/
+/output/
+/outputs/
+
+# Public Markdown documentation is versioned; private thesis material stays local.
+docs/private/
 
 # Research data stay local. GitHub contains source, not dataset files/templates.
-data/
+/data/
 
 # Keep only the runtime config used by the pretrained integration baseline.
-configs/*
-!configs/pretrained_indoor.toml
+/configs/*
+!/configs/pretrained_indoor.toml
 
 # Historical data/review utilities stay local; keep one reproducible smoke asset helper.
-scripts/*
-!scripts/fetch_smoke_asset.py
+/scripts/*
+!/scripts/fetch_smoke_asset.py
 
 # Local historical dataset QA test depends on ignored review utilities.
 tests/unit/test_indoor_v12_gate.py

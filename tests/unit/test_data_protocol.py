@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from secondeye.data.protocol import REQUIRED_COLUMNS, audit_manifest, load_allowed_values
+from secondeye.data.protocol import (
+    REQUIRED_COLUMNS,
+    audit_manifest,
+    load_allowed_values,
+)
 
 
 def valid_row(**overrides: str) -> dict[str, str]:
@@ -111,18 +115,23 @@ def test_nonparticipant_personal_data_requires_manual_review():
         sorted(REQUIRED_COLUMNS),
         [valid_row(contains_personal_data="true", consent_status="not_applicable")],
     )
-    assert any(issue.code == "PERSONAL_DATA_BASIS_REVIEW" and issue.severity == "warning" for issue in issues)
+    assert any(
+        issue.code == "PERSONAL_DATA_BASIS_REVIEW" and issue.severity == "warning"
+        for issue in issues
+    )
 
 
 def test_unsafe_asset_paths_are_rejected():
-    assert "UNSAFE_ASSET_PATH" in issue_codes([valid_row(asset_relpath="../private.jpg")])
+    assert "UNSAFE_ASSET_PATH" in issue_codes(
+        [valid_row(asset_relpath="../private.jpg")]
+    )
 
 
 def test_config_defines_valid_split_fractions(tmp_path: Path):
     path = tmp_path / "data_protocol.toml"
     path.write_text(
         '[split]\nallowed = ["development", "test", "quarantine"]\n'
-        'development_fraction = 0.75\ntest_fraction = 0.25\n',
+        "development_fraction = 0.75\ntest_fraction = 0.25\n",
         encoding="utf-8",
     )
     allowed = load_allowed_values(path)

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from secondeye.multimodal.depth import attach_depth_zones, relative_depth_band
+from secondeye.multimodal.quality import assess_image_quality
 from secondeye.multimodal.speech import (
     localize_vqa_answer,
     normalize_vietnamese_speech,
@@ -37,9 +38,7 @@ def test_attach_depth_zones_uses_bbox_median():
 
 def test_orchestrator_requires_depth_confirmation_and_applies_cooldown():
     clock = SimpleNamespace(value=10.0)
-    orchestrator = SystemOrchestrator(
-        cooldown_seconds=4.0, clock=lambda: clock.value
-    )
+    orchestrator = SystemOrchestrator(cooldown_seconds=4.0, clock=lambda: clock.value)
     detection = {
         "label": "chair",
         "direction": "center",
@@ -49,11 +48,25 @@ def test_orchestrator_requires_depth_confirmation_and_applies_cooldown():
     assert orchestrator.obstacle_alerts([detection]) == []
 
     detection["depth_zone"] = "near"
+    assert orchestrator.obstacle_alerts([detection]) == []
     assert len(orchestrator.obstacle_alerts([detection])) == 1
     assert orchestrator.state is SystemState.OBSTACLE
     assert orchestrator.obstacle_alerts([detection]) == []
 
     clock.value += 4.1
+    assert len(orchestrator.obstacle_alerts([detection])) == 1
+
+
+def test_two_objects_in_one_frame_do_not_fake_temporal_confirmation():
+    orchestrator = SystemOrchestrator(confirmation_frames=2)
+    detection = {
+        "label": "chair",
+        "direction": "center",
+        "obstacle_candidate": True,
+        "depth_zone": "near",
+    }
+
+    assert orchestrator.obstacle_alerts([detection, dict(detection)]) == []
     assert len(orchestrator.obstacle_alerts([detection])) == 1
 
 
@@ -97,12 +110,26 @@ class _FakeVqa:
         return {"answer": "four", "question": question, "abstained": False}
 
 
+class _FakeEnglishVqa:
+    def ask_bgr(self, image, question):
+        return {"answer": "black shirt", "question": question, "abstained": False}
+
+
+class _FakeTranslator:
+    def translate(self, text):
+        assert text == "black shirt"
+        return {
+            "model": "fake-en-vi",
+            "source": text,
+            "translation": "áo sơ mi màu đen",
+        }
+
+
 def test_second_eye_system_integrates_detection_depth_risk_and_tts():
     tts = _FakeTts()
-    system = SecondEyeSystem(
-        detector=_FakeDetector(), depth=_FakeDepth(), tts=tts
-    )
+    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth(), tts=tts)
 
+    system.process_frame(np.zeros((6, 6, 3), dtype=np.uint8))
     result = system.process_frame(np.zeros((6, 6, 3), dtype=np.uint8))
 
     assert result["mode"] == "pretrained_integration"
@@ -116,11 +143,33 @@ def test_second_eye_system_reads_localized_vqa_answer():
     tts = _FakeTts()
     system = SecondEyeSystem(detector=_FakeDetector(), vqa=_FakeVqa(), tts=tts)
 
-    result = system.ask(np.zeros((6, 6, 3), dtype=np.uint8), "How many people?")
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    image = np.repeat(pattern[:, :, None], 3, axis=2)
+    result = system.ask(image, "How many people?")
 
     assert result["spoken_answer_vi"] == "bốn"
     assert result["localization_abstained"] is False
     assert tts.messages == [("bốn", False)]
+
+
+def test_second_eye_system_translates_unknown_english_vqa_answer():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        vqa=_FakeEnglishVqa(),
+        translator=_FakeTranslator(),
+        tts=tts,
+    )
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    image = np.repeat(pattern[:, :, None], 3, axis=2)
+
+    result = system.ask(image, "What is the person wearing?")
+
+    assert result["spoken_answer_vi"] == "áo sơ mi màu đen"
+    assert result["translation_used"] is True
+    assert result["localization_abstained"] is False
+    assert result["abstained"] is False
+    assert tts.messages == [("áo sơ mi màu đen", False)]
 
 
 def test_latest_frame_buffer_drops_stale_frames():
@@ -164,7 +213,13 @@ def test_async_runtime_processes_latest_available_frame_only():
     [
         ("four", "bốn", False),
         ("left", "bên trái", False),
-        ("red bus", "Tôi đã có kết quả bằng tiếng Anh nhưng chưa thể đọc tiếng Việt chính xác.", True),
+        ("blue", "xanh dương", False),
+        ("bus", "xe buýt", False),
+        (
+            "red bus",
+            "red bus",
+            True,
+        ),
     ],
 )
 def test_vqa_answers_are_localized_or_safely_abstained(raw, spoken, abstained):
@@ -186,3 +241,50 @@ def test_camera_cli_defaults_to_async_rates_and_vietnamese_voice():
     assert args.height == 720
     assert args.detection_fps == 12.0
     assert args.depth_fps == 3.0
+
+
+def test_demo_cli_enables_all_pretrained_mvp_features():
+    args = build_parser().parse_args(["demo", "--camera", "1"])
+
+    assert args.depth is True
+    assert args.ocr is True
+    assert args.lazy_semantic is True
+    assert args.priority_audio is True
+    assert args.semantic_device == "cpu"
+    assert args.max_depth_age == 1.5
+
+
+def test_quality_gate_rejects_dark_or_blurry_frames():
+    quality = assess_image_quality(np.zeros((300, 300, 3), dtype=np.uint8))
+
+    assert quality.acceptable is False
+    assert quality.reason == "too_dark"
+
+
+def test_vqa_blocks_navigation_advice_before_calling_model():
+    system = SecondEyeSystem(detector=_FakeDetector(), vqa=_FakeVqa())
+
+    result = system.ask(
+        np.zeros((300, 300, 3), dtype=np.uint8),
+        "Có an toàn để đi qua đường này không?",
+    )
+
+    assert result["abstained"] is True
+    assert result["reason"] == "navigation_request_blocked"
+
+
+def test_scene_description_is_grounded_in_detection_labels():
+    system = SecondEyeSystem(detector=_FakeDetector())
+
+    result = system.describe_scene(
+        detection_result={
+            "detections": [
+                {"label": "chair", "direction": "center"},
+                {"label": "person", "direction": "left"},
+            ]
+        }
+    )
+
+    assert result["source"] == "pretrained_detection"
+    assert "ghế phía trước" in result["description"]
+    assert "người bên trái" in result["description"]

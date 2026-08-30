@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from secondeye.accelerator import accelerator_guard
+
 
 def relative_depth_band(value: float) -> str:
     """Map normalized inverse depth to a deliberately non-metric band."""
@@ -46,7 +48,9 @@ class DepthAnythingEstimator:
         self.model_name = model_name
         self._torch = torch
         self.processor = AutoImageProcessor.from_pretrained(model_name)
-        self.model = AutoModelForDepthEstimation.from_pretrained(model_name).to(device)
+        model = AutoModelForDepthEstimation.from_pretrained(model_name)
+        with accelerator_guard(device, torch):
+            self.model = model.to(device)
         self.model.eval()
 
     def predict_bgr(self, image: Any) -> dict[str, object]:
@@ -60,17 +64,18 @@ class DepthAnythingEstimator:
             raise ValueError("depth input phải là ảnh OpenCV không rỗng")
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         inputs = self.processor(images=Image.fromarray(rgb), return_tensors="pt")
-        inputs = {name: value.to(self.device) for name, value in inputs.items()}
-        started = time.perf_counter()
-        with self._torch.inference_mode():
-            output = self.model(**inputs).predicted_depth
-            resized = self._torch.nn.functional.interpolate(
-                output.unsqueeze(1),
-                size=image.shape[:2],
-                mode="bicubic",
-                align_corners=False,
-            ).squeeze()
-        depth = resized.detach().float().cpu().numpy()
+        with accelerator_guard(self.device, self._torch):
+            inputs = {name: value.to(self.device) for name, value in inputs.items()}
+            started = time.perf_counter()
+            with self._torch.inference_mode():
+                output = self.model(**inputs).predicted_depth
+                resized = self._torch.nn.functional.interpolate(
+                    output.unsqueeze(1),
+                    size=image.shape[:2],
+                    mode="bicubic",
+                    align_corners=False,
+                ).squeeze()
+            depth = resized.detach().float().cpu().numpy()
         low, high = np.percentile(depth, (2.0, 98.0))
         if high <= low:
             normalized = np.zeros_like(depth, dtype=np.float32)
@@ -99,7 +104,10 @@ def attach_depth_zones(
     """Attach a robust median depth band to every detection bbox."""
     import numpy as np
 
-    if not isinstance(relative_inverse_depth, np.ndarray) or relative_inverse_depth.ndim != 2:
+    if (
+        not isinstance(relative_inverse_depth, np.ndarray)
+        or relative_inverse_depth.ndim != 2
+    ):
         raise ValueError("relative_inverse_depth phải là ma trận HxW")
     height, width = relative_inverse_depth.shape
     enriched: list[dict[str, Any]] = []

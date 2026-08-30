@@ -52,14 +52,19 @@ class SystemOrchestrator:
         self,
         *,
         cooldown_seconds: float = 4.0,
+        confirmation_frames: int = 2,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if cooldown_seconds < 0:
             raise ValueError("cooldown_seconds không được âm")
+        if confirmation_frames <= 0:
+            raise ValueError("confirmation_frames phải dương")
         self.cooldown_seconds = cooldown_seconds
+        self.confirmation_frames = confirmation_frames
         self.clock = clock
         self.state = SystemState.IDLE
         self._last_emitted: dict[str, float] = {}
+        self._near_streaks: dict[str, int] = {}
 
     def transition(self, state: SystemState) -> None:
         self.state = state
@@ -68,6 +73,7 @@ class SystemOrchestrator:
         """Emit only depth-confirmed near central obstacle candidates."""
         alerts: list[Alert] = []
         now = self.clock()
+        visible_near: dict[str, str] = {}
         for detection in detections:
             if not detection.get("obstacle_candidate"):
                 continue
@@ -76,6 +82,11 @@ class SystemOrchestrator:
             label = str(detection["label"])
             direction = str(detection.get("direction", "center"))
             key = f"near:{label}:{direction}"
+            visible_near[key] = label
+        for key, label in visible_near.items():
+            self._near_streaks[key] = self._near_streaks.get(key, 0) + 1
+            if self._near_streaks[key] < self.confirmation_frames:
+                continue
             last = self._last_emitted.get(key)
             if last is not None and now - last < self.cooldown_seconds:
                 continue
@@ -89,6 +100,8 @@ class SystemOrchestrator:
                     state=SystemState.OBSTACLE,
                 )
             )
+        for key in set(self._near_streaks) - set(visible_near):
+            self._near_streaks.pop(key, None)
         alerts.sort(key=lambda item: item.priority, reverse=True)
         if alerts:
             self.state = SystemState.OBSTACLE
@@ -107,3 +120,4 @@ class SystemOrchestrator:
 
     def reset(self) -> None:
         self.state = SystemState.IDLE
+        self._near_streaks.clear()
