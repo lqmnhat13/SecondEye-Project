@@ -10,7 +10,7 @@ chất lượng và không phải điều kiện trả lời ba RQ. Dữ liệu 
 
 | Tuần | Mục tiêu | Đầu ra kiểm chứng được | Cổng chất lượng |
 |---|---|---|---|
-| 1 | Chốt đề tài và tổng quan | Charter, 3 RQ, 3 user stories, 15-20 nguồn cốt lõi | GVHD chốt phạm vi, thiết bị, protocol sơ bộ |
+| 1 | Chốt đề tài và tổng quan | Charter, 3 RQ, 3 user stories, 24 nguồn đã rà đến 2026-08-30 | GVHD chốt phạm vi, thiết bị, protocol sơ bộ |
 | 2 | Dữ liệu và baseline 1 | Data card, annotation guide, split theo group; detection và OCR | Smoke test + log mẫu; không dùng test để tuning |
 | 3 | Baseline 2 và đóng phạm vi | Depth, VQA, speech; benchmark trên máy demo; ADR cấu hình cuối | Chọn đúng một cấu hình chính/mô-đun; backlog hóa phần nâng cao |
 | 4 | Tích hợp và khóa tính năng | 3 pipeline end-to-end, config và log thống nhất | Feature freeze; lỗi mô-đun nâng cao không kéo chậm MVP |

@@ -26,10 +26,14 @@ là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current
 ## Tài liệu nội bộ
 
 - `private/thesis/`: phiếu đăng ký và đề cương nguồn. Có thông tin cá nhân; không
-  đưa lên repository công khai.
-- `references/`: cẩm nang/yêu cầu làm khóa luận.
+  đưa lên repository công khai. Phiếu đăng ký là hồ sơ lịch sử; đề cương bản 1.1
+  đã được đồng bộ với MVP mã nguồn 0.3.0 ngày 2026-08-30.
+- `references/`: cẩm nang/yêu cầu làm khóa luận. `kltn-handbook.pdf` là snapshot
+  nguồn nhận ngày 2026-08-03; phải đối chiếu lại với nhà trường trước khi nộp nếu
+  có bản phát hành mới.
 - `design/`: sơ đồ kiến trúc nguồn `.drawio` và bản PNG. Sơ đồ thể hiện kiến trúc
-  mục tiêu nghiên cứu; README/mã nguồn là thẩm quyền cho hành vi runtime thực tế.
+  runtime 0.3.0 và vẫn giữ ranh giới an toàn/nghiên cứu; README/mã nguồn là thẩm
+  quyền cuối cùng cho hành vi thực tế.
 
 ## Chính sách
 
@@ -38,3 +42,6 @@ là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current
 - Model/dataset/output lớn tiếp tục nằm ngoài Git theo `.gitignore`.
 - Khi tạo lại DOCX/PDF từ Markdown, tên file phải có ngày hoặc phiên bản và nội
   dung phải được kiểm tra với phạm vi pretrained-only hiện hành.
+- Workbook `research/literature/literature-matrix.xlsx` phải được tái tạo từ
+  `sources.json` sau mỗi đợt literature search; không dùng workbook có ngày xác
+  minh cũ hơn nguồn JSON để viết Chương 2.

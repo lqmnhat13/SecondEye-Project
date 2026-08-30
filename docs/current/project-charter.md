@@ -1,7 +1,11 @@
 # Project Charter - SecondEye
 
-Phiên bản: 0.2  
-Cập nhật: 2026-08-30  
+Phiên bản tài liệu: 0.3
+
+Cập nhật: 2026-08-30
+
+Đồng bộ với mã nguồn: 0.3.0 (`de67894`)
+
 Trạng thái: phạm vi triển khai hiện tại dùng model pretrained, không fine-tune.
 
 ## Vấn đề và người dùng
@@ -37,6 +41,11 @@ Người dùng mục tiêu là người mù và người có thị lực kém tr
   depth, OCR, VQA, STT hoặc model dịch.
 - Detection dùng schema tích hợp `indoor_coco_baseline_v1`; chỉ công bố các lớp
   COCO có ánh xạ trực tiếp và không suy diễn cửa, cầu thang hoặc vật cản ngoài schema.
+- OCR trên macOS ưu tiên Apple Vision `vi-VN`, fallback PaddleOCR; mô tả cảnh và
+  câu hỏi số lượng/đồ vật được grounded từ detection, BLIP chỉ xử lý một số mẫu
+  thuộc tính được hỗ trợ.
+- Runtime MVP chạy local sau khi cache model, dùng push-to-talk, microphone
+  `auto`, TTS macOS và JSONL session log; không gửi ảnh tới API đa phương thức.
 - Fine-tuning không phải tiêu chí đóng MVP, không phải điều kiện để chạy thí
   nghiệm hiện tại và không nằm trên critical path của khóa luận.
 - Dataset/taxonomy an toàn 15 lớp trước đây được lưu như tài sản nghiên cứu lịch
