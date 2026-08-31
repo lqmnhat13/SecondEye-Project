@@ -82,8 +82,9 @@ Camera Mac/iPhone
 
 Capture, inference và UI không chạy trong cùng một vòng chặn. Nếu model xử lý
 chậm hơn camera, frame cũ bị thay bằng frame mới thay vì tạo hàng đợi dài. Một
-kết quả quá cũ hơn `--overlay-max-age` không được vẽ. Depth quá cũ hơn
-`--max-depth-age` không được dùng để xác nhận vật cản gần.
+kết quả quá cũ hơn `--overlay-max-age` không được vẽ. Chỉ depth sinh từ đúng
+`frame_id` đang detection và không quá `--max-depth-age` mới được xác nhận vật
+cản gần. Depth của frame trước không được tái sử dụng trên bbox của frame mới.
 
 ### 2.2 Luồng tác vụ theo yêu cầu
 
@@ -396,7 +397,7 @@ session log.
   --display-fps 30 \
   --detection-fps 12 \
   --depth-fps 3 \
-  --max-depth-age 1.5 \
+  --max-depth-age 0.5 \
   --overlay-max-age 1.5 \
   --question "What objects are directly in front of me?" \
   --microphone auto \
@@ -416,8 +417,11 @@ session log.
 | `--display-fps` | `30` | Tần suất cập nhật cửa sổ |
 | `--detection-fps` | `12` | Giới hạn tần suất detection; không bảo đảm máy đạt đúng 12 Hz |
 | `--depth-fps` | `3` | Tần suất mục tiêu của depth |
-| `--max-depth-age` | `1.50` giây | Depth cũ hơn giá trị này không được fusion |
+| `--max-depth-age` | `0.50` giây | Depth cùng frame nhưng cũ hơn giá trị này không được fusion |
 | `--overlay-max-age` | `1.50` giây | Kết quả cũ hơn giá trị này không được vẽ |
+| `--depth-medium-threshold` | `0.3333` | Ngưỡng tương đối bắt đầu band `medium`; phải hiệu chuẩn trên validation set |
+| `--depth-near-threshold` | `0.6667` | Ngưỡng tương đối bắt đầu band `near`; không phải mét |
+| `--depth-max-iqr` | `0.35` | Độ phân tán tối đa trong lõi bbox; vượt ngưỡng trả `unknown` |
 | `--question` | câu hỏi mặc định | Câu hỏi ảnh dùng khi nhấn `v`; mặc định trả lời grounded từ detection |
 | `--microphone` | `auto` | `auto`, index hoặc tên AVFoundation |
 | `--listen-seconds` | `4` | Thời lượng thu mỗi lần nhấn `m` |
@@ -573,8 +577,11 @@ secondeye image \
   --no-tts
 ```
 
-Mỗi bbox có thể nhận thêm `relative_depth` và `depth_zone`. Không diễn giải
-`relative_depth` thành mét.
+Mỗi bbox có thể nhận thêm `relative_depth`, `depth_zone`, `depth_confidence`,
+`depth_iqr`, `depth_reason` và `depth_sample_xyxy`. Không diễn giải
+`relative_depth` thành mét. `depth_zone=unknown` là abstention chủ động khi vùng
+lấy mẫu thiếu dữ liệu hoặc chứa nhiều lớp độ sâu. `depth_confidence = 1 - IQR`
+chỉ là độ nhất quán không gian heuristic, không phải xác suất đúng đã calibration.
 
 ### 9.3 OCR
 
@@ -761,7 +768,13 @@ nằm trong candidate set mặc định.
 
 ### 11.4 Depth band
 
-Depth map được chuẩn hóa theo percentile 2–98% của chính frame đó:
+Depth map được chuẩn hóa theo percentile 2–98% của chính frame đó. Depth map
+phẳng hoặc không hữu hạn bị đánh dấu `usable=false`. Với mỗi detection, pipeline
+thu bbox vào 20% mỗi cạnh ngang, 15% phía trên và 10% phía dưới để giảm nền, rồi
+lấy median trong lõi. Nếu IQR của lõi lớn hơn `--depth-max-iqr`, hệ thống trả
+`unknown` thay vì ép một band.
+
+Các ngưỡng mặc định vẫn là:
 
 ```text
 relative depth < 1/3       -> far
@@ -771,7 +784,8 @@ relative depth >= 2/3      -> near
 
 Giá trị lớn hơn nghĩa là tương đối gần hơn trong frame hiện tại. Không so sánh
 trực tiếp giá trị giữa hai camera, hai cảnh hoặc hai thời điểm như một thước đo
-vật lý.
+vật lý. Có thể thay ngưỡng qua CLI, nhưng chỉ nên làm sau khi chọn trên validation
+set khóa; việc thay ngưỡng không biến relative depth thành metric depth.
 
 ## 12. Định dạng kết quả và session log
 
@@ -810,7 +824,11 @@ Một detection có dạng:
   "obstacle_candidate": false,
   "candidate_reason": "outside_central_travel_zone",
   "depth_zone": "medium",
-  "relative_depth": 0.56
+  "relative_depth": 0.56,
+  "depth_confidence": 0.9685,
+  "depth_iqr": 0.0315,
+  "depth_reason": "relative_bbox_core",
+  "depth_sample_xyxy": [89, 475, 208, 853]
 }
 ```
 
@@ -1150,6 +1168,9 @@ Kiểm tra lần lượt:
 - detection đã xuất hiện đủ 2 frame chưa;
 - cảnh báo có đang trong cooldown 4 giây không;
 - depth có bị loại vì `depth_age_ms` quá lớn không.
+- `depth_synchronized` có phải `true` không;
+- `depth_reason` có phải `ambiguous_bbox_depth` hoặc
+  `insufficient_valid_depth` không.
 
 Việc không có cảnh báo không có nghĩa đường đi an toàn.
 

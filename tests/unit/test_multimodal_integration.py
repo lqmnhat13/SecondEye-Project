@@ -4,7 +4,11 @@ import time
 import numpy as np
 import pytest
 
-from secondeye.multimodal.depth import attach_depth_zones, relative_depth_band
+from secondeye.multimodal.depth import (
+    DepthFusionConfig,
+    attach_depth_zones,
+    relative_depth_band,
+)
 from secondeye.multimodal.quality import assess_image_quality
 from secondeye.multimodal.speech import (
     localize_vqa_answer,
@@ -35,6 +39,49 @@ def test_attach_depth_zones_uses_bbox_median():
     assert enriched[0]["depth_zone"] == "near"
     assert enriched[0]["relative_depth"] == pytest.approx(0.9)
     assert "depth_zone" not in detections[0]
+
+
+def test_attach_depth_zones_samples_bbox_core_instead_of_background_border():
+    depth = np.full((20, 20), 0.1, dtype=np.float32)
+    depth[3:18, 4:16] = 0.9
+    detections = [{"label": "chair", "bbox_xyxy": [0, 0, 20, 20]}]
+
+    enriched = attach_depth_zones(detections, depth)
+
+    assert enriched[0]["depth_sample_xyxy"] == [4, 3, 16, 18]
+    assert enriched[0]["relative_depth"] == pytest.approx(0.9)
+    assert enriched[0]["depth_zone"] == "near"
+    assert enriched[0]["depth_confidence"] == pytest.approx(1.0)
+
+
+def test_attach_depth_zones_abstains_for_mixed_depth_bbox():
+    depth = np.full((20, 20), 0.1, dtype=np.float32)
+    depth[3:10, 4:16] = 0.9
+    detections = [{"label": "chair", "bbox_xyxy": [0, 0, 20, 20]}]
+
+    enriched = attach_depth_zones(detections, depth)
+
+    assert enriched[0]["depth_zone"] == "unknown"
+    assert enriched[0]["depth_reason"] == "ambiguous_bbox_depth"
+    assert enriched[0]["depth_iqr"] > 0.35
+
+
+def test_relative_depth_thresholds_can_be_calibrated_on_validation_data():
+    config = DepthFusionConfig(medium_threshold=0.4, near_threshold=0.8)
+
+    assert relative_depth_band(0.7, config) == "medium"
+    assert relative_depth_band(0.8, config) == "near"
+
+
+def test_attach_depth_zones_rejects_bbox_outside_depth_map():
+    depth = np.ones((10, 10), dtype=np.float32)
+
+    enriched = attach_depth_zones(
+        [{"label": "chair", "bbox_xyxy": [20, 20, 30, 30]}], depth
+    )
+
+    assert enriched[0]["depth_zone"] == "unknown"
+    assert enriched[0]["depth_reason"] == "invalid_bbox"
 
 
 def test_orchestrator_requires_depth_confirmation_and_applies_cooldown():
@@ -157,6 +204,34 @@ def test_second_eye_system_integrates_detection_depth_risk_and_tts():
     assert result["detection"]["detections"][0]["depth_zone"] == "near"
     assert result["alerts"][0]["text"] == "Cảnh báo, có ghế ở gần phía trước."
     assert tts.messages == [("Cảnh báo, có ghế ở gần phía trước.", True)]
+
+
+def test_detection_only_frame_does_not_erase_depth_confirmation_streak():
+    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth())
+    detection = _FakeDetector().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
+    depth = _FakeDepth().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
+
+    assert system.fuse_detection_and_depth(detection, depth)["alerts"] == []
+    assert system.fuse_detection_and_depth(detection, None)["alerts"] == []
+    result = system.fuse_detection_and_depth(detection, depth)
+
+    assert len(result["alerts"]) == 1
+    assert result["depth_used_for_alert"] is True
+
+
+def test_unusable_depth_map_cannot_confirm_an_alert():
+    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth())
+    detection = _FakeDetector().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
+    depth = {
+        **_FakeDepth().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8)),
+        "usable": False,
+    }
+
+    result = system.fuse_detection_and_depth(detection, depth)
+
+    assert result["alerts"] == []
+    assert result["depth_used_for_alert"] is False
+    assert "depth_zone" not in result["detection"]["detections"][0]
 
 
 def test_second_eye_system_reads_localized_vqa_answer():
@@ -285,6 +360,41 @@ def test_async_runtime_processes_latest_available_frame_only():
         assert result is not None
         assert result["frame_id"] == 4
         assert result["depth_age_ms"] is not None
+        assert result["depth_source_frame_id"] == result["frame_id"]
+        assert result["depth_synchronized"] is True
+    finally:
+        runtime.stop()
+
+
+def test_async_runtime_never_reuses_depth_from_another_frame():
+    frames = LatestFrameBuffer()
+    frames.publish(np.zeros((6, 6, 3), dtype=np.uint8))
+    runtime = AsyncVisionRuntime(
+        SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth()),
+        frames,
+        detection_fps=100.0,
+        depth_fps=0.1,
+    ).start()
+    try:
+        deadline = time.monotonic() + 1.0
+        first = None
+        while first is None and time.monotonic() < deadline:
+            first = runtime.latest()
+            time.sleep(0.005)
+        assert first is not None
+        frames.publish(np.ones((6, 6, 3), dtype=np.uint8))
+
+        second = first
+        deadline = time.monotonic() + 1.0
+        while second["frame_id"] == first["frame_id"] and time.monotonic() < deadline:
+            second = runtime.latest() or second
+            time.sleep(0.005)
+
+        assert second["frame_id"] != first["frame_id"]
+        assert second["depth"] is None
+        assert second["depth_used_for_alert"] is False
+        assert second["depth_synchronized"] is False
+        assert second["depth_rejection_reason"] == "different_frame"
     finally:
         runtime.stop()
 
@@ -332,7 +442,7 @@ def test_demo_cli_enables_all_pretrained_mvp_features():
     assert args.lazy_semantic is True
     assert args.priority_audio is True
     assert args.semantic_device == "cpu"
-    assert args.max_depth_age == 1.5
+    assert args.max_depth_age == 0.5
     assert args.microphone == "auto"
 
 

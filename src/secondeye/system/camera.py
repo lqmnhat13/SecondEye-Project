@@ -213,6 +213,7 @@ class AsyncVisionRuntime:
         last_depth_started = float("-inf")
         latest_depth: dict[str, object] | None = None
         latest_depth_at: float | None = None
+        latest_depth_frame_id: int | None = None
         previous_detection_completed: float | None = None
         previous_depth_completed: float | None = None
         try:
@@ -239,6 +240,7 @@ class AsyncVisionRuntime:
                     # Age from the source frame capture time, not from model
                     # completion, so stale depth cannot be treated as fresh.
                     latest_depth_at = packet.captured_at
+                    latest_depth_frame_id = packet.frame_id
                     depth_completed = self.clock()
                     if (
                         previous_depth_completed is not None
@@ -272,7 +274,11 @@ class AsyncVisionRuntime:
                 )
                 usable_depth = (
                     latest_depth
-                    if depth_age is not None and depth_age <= self.max_depth_age_seconds
+                    if (
+                        depth_age is not None
+                        and depth_age <= self.max_depth_age_seconds
+                        and latest_depth_frame_id == packet.frame_id
+                    )
                     else None
                 )
                 payload = self.system.fuse_detection_and_depth(
@@ -288,6 +294,21 @@ class AsyncVisionRuntime:
                         "completed_at": completed,
                         "result_age_ms": round(
                             max(0.0, completed - packet.captured_at) * 1000.0, 2
+                        ),
+                        "depth_source_frame_id": latest_depth_frame_id,
+                        "depth_synchronized": bool(
+                            usable_depth is not None
+                            and latest_depth_frame_id == packet.frame_id
+                        ),
+                        "depth_rejection_reason": (
+                            None
+                            if usable_depth is not None or latest_depth is None
+                            else (
+                                "stale"
+                                if depth_age is not None
+                                and depth_age > self.max_depth_age_seconds
+                                else "different_frame"
+                            )
                         ),
                     }
                 )

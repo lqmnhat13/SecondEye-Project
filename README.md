@@ -116,8 +116,10 @@ Nhấn `q` hoặc `Esc` để thoát, `x` để dừng âm thanh. Khi không b�
 detection chỉ hiển thị ứng viên và không phát cảnh báo “ở gần”.
 
 Camera runtime dùng capture thread và latest-frame buffer riêng: UI không chờ
-YOLO/depth, frame cũ tự bị bỏ và kết quả quá hạn không được vẽ/cảnh báo. Mặc định
-camera/display là 30 FPS, detection tối đa 12 Hz và depth tối đa 3 Hz:
+YOLO/depth, frame cũ tự bị bỏ và kết quả quá hạn không được vẽ/cảnh báo. Depth
+chỉ được xác nhận cảnh báo khi được tính từ đúng frame đang detection; kết quả
+depth cũ không được chiếu lên bbox mới. Mặc định camera/display là 30 FPS,
+detection tối đa 12 Hz và depth tối đa 3 Hz:
 
 ```bash
 secondeye camera --camera 1 --depth \

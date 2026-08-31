@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from secondeye.multimodal.depth import attach_depth_zones
+from secondeye.multimodal.depth import DepthFusionConfig, attach_depth_zones
 from secondeye.multimodal.quality import assess_image_quality
 from secondeye.multimodal.questions import (
     normalize_visual_question,
@@ -146,6 +146,7 @@ class SecondEyeSystem:
         translator: Any | None = None,
         tts: Any | None = None,
         orchestrator: SystemOrchestrator | None = None,
+        depth_fusion_config: DepthFusionConfig | None = None,
     ) -> None:
         self.detector = detector
         self.depth = depth
@@ -154,6 +155,7 @@ class SecondEyeSystem:
         self.translator = translator
         self.tts = tts
         self.orchestrator = orchestrator or SystemOrchestrator()
+        self.depth_fusion_config = depth_fusion_config or DepthFusionConfig()
 
     def _speak(self, text: str, priority: AlertPriority) -> None:
         if self.tts is None or not text.strip():
@@ -193,13 +195,23 @@ class SecondEyeSystem:
         """Fuse independently scheduled detection/depth results safely."""
         started = time.perf_counter() if started_at is None else started_at
         detections = list(detection["detections"])
-        if depth_result is not None:
+        depth_usable = depth_result is not None and bool(
+            depth_result.get("usable", True)
+        )
+        if depth_usable:
             detections = attach_depth_zones(
-                detections, depth_result["relative_inverse_depth"]
+                detections,
+                depth_result["relative_inverse_depth"],
+                config=self.depth_fusion_config,
             )
-        alerts = self.orchestrator.obstacle_alerts(detections)
+        alerts = (
+            self.orchestrator.obstacle_alerts(detections) if depth_usable else []
+        )
         if not alerts and self.orchestrator.state is SystemState.OBSTACLE:
-            self.orchestrator.reset()
+            # Detection-only frames must not erase confirmation accumulated by
+            # synchronized depth frames, but they also must not retain an
+            # active obstacle UI state without current depth evidence.
+            self.orchestrator.transition(SystemState.IDLE)
         if self.tts is not None and alerts:
             self._speak(alerts[0].text, AlertPriority.OBSTACLE)
         return {
@@ -209,6 +221,7 @@ class SecondEyeSystem:
             "state": self.orchestrator.state.value,
             "detection": {**detection, "detections": detections},
             "depth": self._serializable_depth(depth_result),
+            "depth_used_for_alert": depth_usable,
             "depth_age_ms": None if depth_age_ms is None else round(depth_age_ms, 2),
             "alerts": [
                 {

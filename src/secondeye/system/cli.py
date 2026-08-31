@@ -17,6 +17,7 @@ from secondeye.detection.model import PretrainedCocoDetector
 from secondeye.detection.runtime import require_detection_runtime, write_json
 from secondeye.multimodal import (
     DepthAnythingEstimator,
+    DepthFusionConfig,
     FFmpegMicrophoneRecorder,
     MacOSTextToSpeech,
     AutomaticOcrReader,
@@ -114,6 +115,15 @@ def _build_system(args: argparse.Namespace) -> SecondEyeSystem:
         vqa=vqa,
         translator=translator,
         tts=tts,
+        depth_fusion_config=DepthFusionConfig(
+            medium_threshold=float(
+                getattr(args, "depth_medium_threshold", 1.0 / 3.0)
+            ),
+            near_threshold=float(
+                getattr(args, "depth_near_threshold", 2.0 / 3.0)
+            ),
+            max_iqr=float(getattr(args, "depth_max_iqr", 0.35)),
+        ),
     )
 
 
@@ -311,6 +321,27 @@ def _add_tts_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--speech-rate", type=int, default=165)
 
 
+def _add_depth_fusion_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--depth-medium-threshold",
+        type=float,
+        default=1.0 / 3.0,
+        help="Ngưỡng relative depth bắt đầu vùng medium (không phải mét)",
+    )
+    parser.add_argument(
+        "--depth-near-threshold",
+        type=float,
+        default=2.0 / 3.0,
+        help="Ngưỡng relative depth bắt đầu vùng near (không phải mét)",
+    )
+    parser.add_argument(
+        "--depth-max-iqr",
+        type=float,
+        default=0.35,
+        help="Độ phân tán depth tối đa trong lõi bbox trước khi trả unknown",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -324,6 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("--depth", action="store_true")
     image.add_argument("--ocr", action="store_true")
     image.add_argument("--question")
+    _add_depth_fusion_arguments(image)
     _add_tts_arguments(image)
     image.add_argument("--output", type=Path)
     image.set_defaults(handler=command_image, lazy_semantic=True)
@@ -339,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     camera.add_argument("--depth-fps", type=float, default=3.0)
     camera.add_argument("--max-depth-age", type=float, default=0.50)
     camera.add_argument("--overlay-max-age", type=float, default=0.75)
+    _add_depth_fusion_arguments(camera)
     _add_tts_arguments(camera)
     camera.set_defaults(handler=command_camera, ocr=False, question=None)
 
@@ -353,8 +386,9 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--display-fps", type=float, default=30.0)
     demo.add_argument("--detection-fps", type=float, default=12.0)
     demo.add_argument("--depth-fps", type=float, default=3.0)
-    demo.add_argument("--max-depth-age", type=float, default=1.50)
+    demo.add_argument("--max-depth-age", type=float, default=0.50)
     demo.add_argument("--overlay-max-age", type=float, default=1.50)
+    _add_depth_fusion_arguments(demo)
     demo.add_argument(
         "--question",
         default="What objects are directly in front of me?",
