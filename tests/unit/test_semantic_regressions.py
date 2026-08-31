@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType, SimpleNamespace
+
 import numpy as np
 import pytest
 
+from secondeye.multimodal._model_loading import _from_pretrained_offline_first
+from secondeye.multimodal.depth import DepthAnythingEstimator
 from secondeye.multimodal.ocr import AppleVisionOcrReader, PaddleOcrReader
 from secondeye.multimodal.questions import normalize_visual_question
-from secondeye.multimodal.vqa import (
-    _from_pretrained_offline_first,
-    _is_uncertain_answer,
-)
+from secondeye.multimodal.vqa import _is_uncertain_answer
 from secondeye.system.demo import copy_frame_for_display
 from secondeye.system.pipeline import SecondEyeSystem
 
@@ -277,4 +279,43 @@ def test_model_loader_falls_back_to_download_only_when_cache_is_missing():
     assert Factory.calls == [
         ("model", {"local_files_only": True}),
         ("model", {}),
+    ]
+
+
+def test_depth_loader_uses_local_cache_for_processor_and_model(monkeypatch):
+    calls = []
+
+    class ProcessorFactory:
+        @classmethod
+        def from_pretrained(cls, name, **kwargs):
+            calls.append(("processor", name, kwargs))
+            return object()
+
+    class Model:
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return None
+
+    class ModelFactory:
+        @classmethod
+        def from_pretrained(cls, name, **kwargs):
+            calls.append(("model", name, kwargs))
+            return Model()
+
+    transformers = ModuleType("transformers")
+    transformers.AutoImageProcessor = ProcessorFactory
+    transformers.AutoModelForDepthEstimation = ModelFactory
+    torch = ModuleType("torch")
+    torch.cuda = SimpleNamespace(is_available=lambda: False)
+    torch.backends = SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False))
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    DepthAnythingEstimator(model_name="depth-model", device="cpu")
+
+    assert calls == [
+        ("processor", "depth-model", {"local_files_only": True}),
+        ("model", "depth-model", {"local_files_only": True}),
     ]

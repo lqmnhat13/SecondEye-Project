@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from secondeye.accelerator import accelerator_guard
+from secondeye.multimodal._model_loading import _from_pretrained_offline_first
 
 
 def relative_depth_band(value: float) -> str:
@@ -47,8 +48,12 @@ class DepthAnythingEstimator:
         self.device = device
         self.model_name = model_name
         self._torch = torch
-        self.processor = AutoImageProcessor.from_pretrained(model_name)
-        model = AutoModelForDepthEstimation.from_pretrained(model_name)
+        self.processor = _from_pretrained_offline_first(
+            AutoImageProcessor, model_name
+        )
+        model = _from_pretrained_offline_first(
+            AutoModelForDepthEstimation, model_name
+        )
         with accelerator_guard(device, torch):
             self.model = model.to(device)
         self.model.eval()

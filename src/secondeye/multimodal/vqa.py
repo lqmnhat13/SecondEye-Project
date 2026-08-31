@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from secondeye.accelerator import accelerator_guard
+from secondeye.multimodal._model_loading import _from_pretrained_offline_first
 
 
 _UNCERTAIN_ANSWERS = {
@@ -17,14 +18,6 @@ _UNCERTAIN_ANSWERS = {
     "unknown",
     "unclear",
 }
-
-
-def _from_pretrained_offline_first(factory: Any, model_name: str) -> Any:
-    """Use an existing cache without a network metadata retry penalty."""
-    try:
-        return factory.from_pretrained(model_name, local_files_only=True)
-    except OSError:
-        return factory.from_pretrained(model_name)
 
 
 def _is_uncertain_answer(answer: str) -> bool:
