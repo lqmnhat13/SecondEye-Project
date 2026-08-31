@@ -21,6 +21,7 @@ from secondeye.multimodal import (
     FFmpegMicrophoneRecorder,
     MacOSTextToSpeech,
     AutomaticOcrReader,
+    OcrConsensusConfig,
     PretrainedEnglishVietnameseTranslator,
     PretrainedVisualQuestionAnswering,
     WhisperSpeechToText,
@@ -124,16 +125,19 @@ def _build_system(args: argparse.Namespace) -> SecondEyeSystem:
             ),
             max_iqr=float(getattr(args, "depth_max_iqr", 0.35)),
         ),
+        ocr_consensus_config=OcrConsensusConfig(
+            max_candidates=int(getattr(args, "ocr_max_candidates", 3)),
+            minimum_consensus=float(getattr(args, "ocr_min_consensus", 0.60)),
+        ),
     )
 
 
 def command_doctor(args: argparse.Namespace) -> None:
-    del args
     groups = {
         "detection": ("numpy", "cv2", "torch", "ultralytics"),
         "depth_vqa_stt": ("torch", "transformers"),
         "translation_en_vi": ("sentencepiece",),
-        "ocr": ("paddleocr",),
+        "ocr": ("paddleocr", "paddle", "setuptools"),
     }
     modules: dict[str, bool] = {}
     details: dict[str, str] = {}
@@ -173,6 +177,25 @@ def command_doctor(args: argparse.Namespace) -> None:
             else "voice Linh unavailable",
         }
     )
+    if args.ocr_smoke_image is not None:
+        smoke_path = args.ocr_smoke_image.expanduser().resolve()
+        try:
+            import cv2
+
+            smoke_image = cv2.imread(str(smoke_path), cv2.IMREAD_COLOR)
+            if smoke_image is None:
+                raise ValueError(f"Không đọc được ảnh: {smoke_path}")
+            smoke_result = AutomaticOcrReader().read_bgr(smoke_image)
+        except Exception as exc:
+            modules["ocr_smoke"] = False
+            details["ocr_smoke"] = f"{type(exc).__name__}: {exc}"
+        else:
+            modules["ocr_smoke"] = True
+            details["ocr_smoke"] = (
+                f"engine={smoke_result.get('engine')}, "
+                f"lines={len(smoke_result.get('lines', []))}, "
+                f"latency_ms={smoke_result.get('latency_ms')}"
+            )
     print(
         json.dumps(
             {"success": all(modules.values()), "modules": modules, "details": details},
@@ -286,6 +309,8 @@ def command_camera(args: argparse.Namespace) -> None:
 def command_demo(args: argparse.Namespace) -> None:
     if args.display_fps <= 0 or args.overlay_max_age <= 0:
         raise ValueError("display-fps và overlay-max-age phải dương")
+    if args.ocr_burst_frames <= 0 or args.ocr_burst_window <= 0:
+        raise ValueError("ocr-burst-frames và ocr-burst-window phải dương")
     if args.max_seconds is not None and args.max_seconds <= 0:
         raise ValueError("max-seconds phải dương")
     cv2, _, _ = require_detection_runtime()
@@ -342,12 +367,32 @@ def _add_depth_fusion_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_ocr_consensus_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ocr-max-candidates",
+        type=int,
+        default=3,
+        help="Số frame chất lượng tốt nhất được OCR trong mỗi burst",
+    )
+    parser.add_argument(
+        "--ocr-min-consensus",
+        type=float,
+        default=0.60,
+        help="Độ tương đồng transcript tối thiểu để đọc thành tiếng",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     doctor = subparsers.add_parser("doctor", help="Kiểm tra runtime mà không tải model")
+    doctor.add_argument(
+        "--ocr-smoke-image",
+        type=Path,
+        help="Khởi tạo OCR thật trên ảnh local và chỉ báo engine/line/latency",
+    )
     doctor.set_defaults(handler=command_doctor)
 
     image = subparsers.add_parser("image", help="Chạy các module trên một ảnh local")
@@ -355,6 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("--depth", action="store_true")
     image.add_argument("--ocr", action="store_true")
     image.add_argument("--question")
+    _add_ocr_consensus_arguments(image)
     _add_depth_fusion_arguments(image)
     _add_tts_arguments(image)
     image.add_argument("--output", type=Path)
@@ -389,6 +435,9 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--max-depth-age", type=float, default=0.50)
     demo.add_argument("--overlay-max-age", type=float, default=1.50)
     _add_depth_fusion_arguments(demo)
+    _add_ocr_consensus_arguments(demo)
+    demo.add_argument("--ocr-burst-frames", type=int, default=5)
+    demo.add_argument("--ocr-burst-window", type=float, default=0.60)
     demo.add_argument(
         "--question",
         default="What objects are directly in front of me?",

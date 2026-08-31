@@ -8,7 +8,11 @@ import pytest
 
 from secondeye.multimodal._model_loading import _from_pretrained_offline_first
 from secondeye.multimodal.depth import DepthAnythingEstimator
-from secondeye.multimodal.ocr import AppleVisionOcrReader, PaddleOcrReader
+from secondeye.multimodal.ocr import (
+    AppleVisionOcrReader,
+    AutomaticOcrReader,
+    PaddleOcrReader,
+)
 from secondeye.multimodal.questions import normalize_visual_question
 from secondeye.multimodal.vqa import _is_uncertain_answer
 from secondeye.system.demo import copy_frame_for_display
@@ -203,6 +207,103 @@ def test_ocr_discards_each_low_confidence_line_not_only_low_mean():
         "chuỗi nhiễu",
         "MỘT KÝ TỰ",
     ]
+
+
+def test_paddle_ocr_sorts_shuffled_lines_by_visual_reading_order():
+    class ShuffledEngine:
+        def predict(self, image):
+            del image
+            return [
+                {
+                    "res": {
+                        "rec_texts": ["phải", "dòng hai", "trái"],
+                        "rec_scores": [0.9, 0.9, 0.9],
+                        "rec_boxes": [
+                            [100, 0, 150, 20],
+                            [0, 40, 80, 60],
+                            [0, 0, 50, 20],
+                        ],
+                    }
+                }
+            ]
+
+    reader = object.__new__(PaddleOcrReader)
+    reader.language = "vi"
+    reader.minimum_line_confidence = 0.75
+    reader.accept_missing_confidence = False
+    reader.engine = ShuffledEngine()
+
+    result = reader.read_bgr(np.zeros((100, 200, 3), dtype=np.uint8))
+
+    assert result["transcript"] == "trái phải dòng hai"
+    assert result["structured_transcript"] == "trái\nphải\ndòng hai"
+
+
+def test_paddle_ocr_rejects_lines_without_confidence_by_default():
+    class MissingScoreEngine:
+        def predict(self, image):
+            del image
+            return [{"res": {"rec_texts": ["không chắc"], "rec_boxes": []}}]
+
+    reader = object.__new__(PaddleOcrReader)
+    reader.language = "vi"
+    reader.minimum_line_confidence = 0.75
+    reader.accept_missing_confidence = False
+    reader.engine = MissingScoreEngine()
+
+    result = reader.read_bgr(np.zeros((100, 200, 3), dtype=np.uint8))
+
+    assert result["transcript"] == ""
+    assert result["discarded_lines"][0]["text"] == "không chắc"
+
+
+def test_automatic_ocr_falls_back_when_primary_returns_no_text():
+    class EmptyPrimary:
+        def read_bgr(self, image):
+            del image
+            return {"engine": "Apple Vision", "transcript": "", "lines": []}
+
+    class UsefulFallback:
+        def read_bgr(self, image):
+            del image
+            return {
+                "engine": "PaddleOCR",
+                "transcript": "VĂN BẢN",
+                "lines": [],
+            }
+
+    reader = object.__new__(AutomaticOcrReader)
+    reader.language = "vi"
+    reader._primary = EmptyPrimary()
+    reader._primary_init_error = None
+    reader._fallback = UsefulFallback()
+
+    result = reader.read_bgr(np.zeros((100, 200, 3), dtype=np.uint8))
+
+    assert result["transcript"] == "VĂN BẢN"
+    assert result["fallback_from"] == "Apple Vision"
+    assert result["fallback_reason"] == "primary_empty"
+
+
+def test_automatic_ocr_reports_both_engine_failures():
+    class BrokenPrimary:
+        def read_bgr(self, image):
+            del image
+            raise RuntimeError("vision failed")
+
+    class BrokenFallback:
+        def read_bgr(self, image):
+            del image
+            raise ModuleNotFoundError("missing runtime")
+
+    reader = object.__new__(AutomaticOcrReader)
+    reader.language = "vi"
+    reader._primary = BrokenPrimary()
+    reader._primary_init_error = None
+    reader._fallback = BrokenFallback()
+
+    with pytest.raises(RuntimeError, match="primary=.*vision failed.*fallback=.*missing"):
+        reader.read_bgr(np.zeros((100, 200, 3), dtype=np.uint8))
 
 
 def test_display_overlay_copy_cannot_contaminate_semantic_frame():

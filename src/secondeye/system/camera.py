@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -18,10 +19,20 @@ class FramePacket:
 class LatestFrameBuffer:
     """A queue of size one: new camera frames replace stale unprocessed frames."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        *,
+        history_size: int = 10,
+        history_interval_seconds: float = 0.08,
+    ) -> None:
+        if history_size <= 0 or history_interval_seconds <= 0:
+            raise ValueError("history_size và history_interval_seconds phải dương")
         self.clock = clock
+        self.history_interval_seconds = history_interval_seconds
         self._condition = threading.Condition()
         self._packet: FramePacket | None = None
+        self._history: deque[FramePacket] = deque(maxlen=history_size)
         self._closed = False
         self._error: Exception | None = None
 
@@ -36,6 +47,16 @@ class LatestFrameBuffer:
                 frame=frame,
             )
             self._packet = packet
+            if (
+                not self._history
+                or packet.captured_at - self._history[-1].captured_at
+                >= self.history_interval_seconds
+            ):
+                self._history.append(packet)
+            else:
+                # Keep the newest frame in the current time bucket, limiting
+                # burst memory without sacrificing recency.
+                self._history[-1] = packet
             self._condition.notify_all()
             return packet
 
@@ -46,6 +67,43 @@ class LatestFrameBuffer:
                 return None
             frame = packet.frame.copy() if copy_frame else packet.frame
             return FramePacket(packet.frame_id, packet.captured_at, frame)
+
+    def recent(
+        self,
+        *,
+        count: int = 5,
+        max_age_seconds: float = 0.60,
+        copy_frame: bool = True,
+    ) -> list[FramePacket]:
+        """Return an evenly sampled recent burst in chronological order."""
+        if count <= 0 or max_age_seconds <= 0:
+            raise ValueError("count và max_age_seconds phải dương")
+        with self._condition:
+            if not self._history:
+                return []
+            newest_at = self._history[-1].captured_at
+            eligible = [
+                packet
+                for packet in self._history
+                if newest_at - packet.captured_at <= max_age_seconds
+            ]
+            if len(eligible) > count:
+                if count == 1:
+                    eligible = [eligible[-1]]
+                else:
+                    last = len(eligible) - 1
+                    indices = [
+                        round(index * last / (count - 1)) for index in range(count)
+                    ]
+                    eligible = [eligible[index] for index in indices]
+            return [
+                FramePacket(
+                    packet.frame_id,
+                    packet.captured_at,
+                    packet.frame.copy() if copy_frame else packet.frame,
+                )
+                for packet in eligible
+            ]
 
     def wait_for_new(
         self, after_frame_id: int, timeout: float = 0.5

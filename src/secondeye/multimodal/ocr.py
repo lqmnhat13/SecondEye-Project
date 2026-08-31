@@ -10,8 +10,90 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from statistics import median
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class OcrConsensusConfig:
+    """Settings for selecting a stable transcript from a short frame burst."""
+
+    max_candidates: int = 3
+    minimum_consensus: float = 0.60
+
+    def __post_init__(self) -> None:
+        if self.max_candidates <= 0:
+            raise ValueError("max_candidates phải dương")
+        if not 0.0 <= self.minimum_consensus <= 1.0:
+            raise ValueError("minimum_consensus phải nằm trong [0, 1]")
+
+
+def _box_bounds(box: Any) -> tuple[float, float, float, float] | None:
+    """Normalize an xyxy box or polygon to xyxy float bounds."""
+    if box is None:
+        return None
+    value = getattr(box, "tolist", lambda: box)()
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        if len(value) == 4 and not isinstance(value[0], (list, tuple)):
+            x1, y1, x2, y2 = (float(item) for item in value)
+            return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
+        points = [point for point in value if len(point) >= 2]
+        if not points:
+            return None
+        xs = [float(point[0]) for point in points]
+        ys = [float(point[1]) for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sort_lines_reading_order(
+    lines: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Sort horizontal text into visual rows, then from left to right."""
+    positioned: list[tuple[dict[str, object], tuple[float, float, float, float]]] = []
+    unpositioned: list[dict[str, object]] = []
+    for line in lines:
+        bounds = _box_bounds(line.get("box"))
+        if bounds is None:
+            unpositioned.append(line)
+        else:
+            positioned.append((line, bounds))
+    if not positioned:
+        return list(lines)
+    typical_height = median(max(1.0, box[3] - box[1]) for _, box in positioned)
+    rows: list[dict[str, object]] = []
+    for line, bounds in sorted(
+        positioned, key=lambda item: ((item[1][1] + item[1][3]) / 2.0, item[1][0])
+    ):
+        center_y = (bounds[1] + bounds[3]) / 2.0
+        matching = next(
+            (
+                row
+                for row in reversed(rows)
+                if abs(center_y - float(row["center_y"])) <= typical_height * 0.60
+            ),
+            None,
+        )
+        if matching is None:
+            rows.append({"center_y": center_y, "items": [(line, bounds)]})
+        else:
+            items = matching["items"]
+            assert isinstance(items, list)
+            items.append((line, bounds))
+            matching["center_y"] = sum(
+                (item_box[1] + item_box[3]) / 2.0 for _, item_box in items
+            ) / len(items)
+    ordered: list[dict[str, object]] = []
+    for row in rows:
+        items = row["items"]
+        assert isinstance(items, list)
+        ordered.extend(line for line, _ in sorted(items, key=lambda item: item[1][0]))
+    return ordered + unpositioned
 
 
 class AppleVisionOcrReader:
@@ -103,7 +185,7 @@ class AppleVisionOcrReader:
                     ],
                 }
             )
-        raw_lines.sort(key=lambda line: (line["box"][1], line["box"][0]))
+        raw_lines = _sort_lines_reading_order(raw_lines)
         lines = [
             line
             for line in raw_lines
@@ -117,13 +199,19 @@ class AppleVisionOcrReader:
             "success": True,
             "engine": "Apple Vision",
             "language": self.language,
+            "languages": ["vi-VN", "en-US"],
             "transcript": " ".join(line["text"] for line in lines),
+            "structured_transcript": "\n".join(line["text"] for line in lines),
             "raw_transcript": " ".join(line["text"] for line in raw_lines),
             "lines": lines,
             "discarded_lines": discarded,
             "minimum_line_confidence": self.minimum_line_confidence,
+            "reading_order": "row_major_geometry_v1",
             "engine_latency_ms": round(float(payload.get("latency_ms", 0.0)), 2),
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            "limitations": [
+                "Confidence của engine chưa được calibration thành xác suất transcript đúng."
+            ],
         }
 
 
@@ -133,6 +221,7 @@ class PaddleOcrReader:
         language: str = "vi",
         *,
         minimum_line_confidence: float = 0.75,
+        accept_missing_confidence: bool = False,
     ) -> None:
         if not 0.0 <= minimum_line_confidence <= 1.0:
             raise ValueError("minimum_line_confidence phải nằm trong [0, 1]")
@@ -144,6 +233,7 @@ class PaddleOcrReader:
             ) from exc
         self.language = language
         self.minimum_line_confidence = minimum_line_confidence
+        self.accept_missing_confidence = accept_missing_confidence
         self.engine = PaddleOCR(
             lang=language,
             use_doc_orientation_classify=False,
@@ -174,22 +264,30 @@ class PaddleOcrReader:
             for index, text in enumerate(texts):
                 score = float(scores[index]) if index < len(scores) else None
                 box = boxes[index] if index < len(boxes) else None
+                normalized_box = (
+                    None if box is None else getattr(box, "tolist", lambda: box)()
+                )
                 lines.append(
                     {
                         "text": str(text).strip(),
                         "confidence": None if score is None else round(score, 4),
-                        "box": None
-                        if box is None
-                        else getattr(box, "tolist", lambda: box)(),
+                        "box": normalized_box,
                     }
                 )
+        lines = _sort_lines_reading_order(lines)
         accepted_lines = [
             line
             for line in lines
             if line["text"]
             and (
-                line["confidence"] is None
-                or float(line["confidence"]) >= self.minimum_line_confidence
+                (
+                    line["confidence"] is None
+                    and getattr(self, "accept_missing_confidence", False)
+                )
+                or (
+                    line["confidence"] is not None
+                    and float(line["confidence"]) >= self.minimum_line_confidence
+                )
             )
         ]
         discarded_lines = [line for line in lines if line not in accepted_lines]
@@ -201,13 +299,23 @@ class PaddleOcrReader:
             "engine": "PaddleOCR",
             "language": self.language,
             "transcript": transcript,
+            "structured_transcript": "\n".join(
+                line["text"] for line in accepted_lines
+            ),
             "raw_transcript": " ".join(
                 line["text"] for line in lines if line["text"]
             ),
             "lines": accepted_lines,
             "discarded_lines": discarded_lines,
             "minimum_line_confidence": self.minimum_line_confidence,
+            "accept_missing_confidence": getattr(
+                self, "accept_missing_confidence", False
+            ),
+            "reading_order": "row_major_geometry_v1",
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
+            "limitations": [
+                "Confidence của engine chưa được calibration thành xác suất transcript đúng."
+            ],
         }
 
 
@@ -216,24 +324,44 @@ class AutomaticOcrReader:
 
     def __init__(self, language: str = "vi") -> None:
         self.language = language
+        self._primary_init_error: str | None = None
         try:
             self._primary: AppleVisionOcrReader | None = AppleVisionOcrReader()
-        except RuntimeError:
+        except RuntimeError as exc:
             self._primary = None
+            self._primary_init_error = f"{type(exc).__name__}: {exc}"
         self._fallback: PaddleOcrReader | None = None
 
     def read_bgr(self, image: Any) -> dict[str, object]:
         primary_error: str | None = None
+        fallback_reason = "primary_unavailable"
         if self._primary is not None:
             try:
-                return self._primary.read_bgr(image)
-            except RuntimeError as exc:
+                primary_result = self._primary.read_bgr(image)
+            except Exception as exc:
                 primary_error = f"{type(exc).__name__}: {exc}"
+                fallback_reason = "primary_error"
                 self._primary = None
-        self._fallback = self._fallback or PaddleOcrReader(language=self.language)
-        result = self._fallback.read_bgr(image)
+            else:
+                if str(primary_result.get("transcript", "")).strip():
+                    return primary_result
+                primary_error = "Apple Vision returned no accepted text"
+                fallback_reason = "primary_empty"
+        primary_error = primary_error or self._primary_init_error
+        try:
+            self._fallback = self._fallback or PaddleOcrReader(language=self.language)
+            result = self._fallback.read_bgr(image)
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
+            if primary_error:
+                raise RuntimeError(
+                    f"Cả hai OCR engine đều lỗi; primary={primary_error}; "
+                    f"fallback={fallback_error}"
+                ) from exc
+            raise RuntimeError(f"PaddleOCR lỗi: {fallback_error}") from exc
         return {
             **result,
             "fallback_from": "Apple Vision" if primary_error else None,
             "fallback_error": primary_error,
+            "fallback_reason": fallback_reason,
         }

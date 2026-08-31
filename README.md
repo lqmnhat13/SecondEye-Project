@@ -63,7 +63,15 @@ secondeye doctor
 pytest
 ```
 
-`doctor` chỉ kiểm tra dependency, không tải model.
+Mặc định `doctor` chỉ kiểm tra dependency, không tải model.
+
+Kiểm tra OCR end-to-end bằng đúng runtime đang dùng:
+
+```bash
+secondeye doctor --ocr-smoke-image data/samples/ultralytics_bus.jpg
+```
+
+Lệnh này chỉ báo engine, số dòng và latency; không in transcript của ảnh.
 
 ## Chạy MVP tích hợp
 
@@ -87,7 +95,7 @@ tên chính xác, ví dụ `--microphone 2` hoặc
 
 Điều khiển trong cửa sổ camera:
 
-- `o`: đọc chữ trong frame hiện tại.
+- `o`: đọc chữ từ burst frame gần nhất và chỉ phát transcript đủ đồng thuận.
 - `s`: mô tả ngắn dựa trên các vật thể detector thực sự nhìn thấy.
 - `v`: hỏi câu cấu hình bởi `--question`.
 - `m`: thu lệnh giọng nói trong 4 giây; hỗ trợ đọc chữ, mô tả, hỏi ảnh, dừng và lặp lại.

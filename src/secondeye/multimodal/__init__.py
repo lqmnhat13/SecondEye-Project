@@ -1,7 +1,12 @@
 """Pretrained multimodal adapters used by the local integration baseline."""
 
 from .depth import DepthAnythingEstimator, DepthFusionConfig, attach_depth_zones
-from .ocr import AppleVisionOcrReader, AutomaticOcrReader, PaddleOcrReader
+from .ocr import (
+    AppleVisionOcrReader,
+    AutomaticOcrReader,
+    OcrConsensusConfig,
+    PaddleOcrReader,
+)
 from .questions import VisualQuestion, normalize_visual_question, plain_vietnamese
 from .speech import (
     FFmpegMicrophoneRecorder,
@@ -22,6 +27,7 @@ __all__ = [
     "AppleVisionOcrReader",
     "AutomaticOcrReader",
     "PaddleOcrReader",
+    "OcrConsensusConfig",
     "VisualQuestion",
     "normalize_visual_question",
     "plain_vietnamese",

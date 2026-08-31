@@ -10,6 +10,7 @@ from secondeye.multimodal.depth import (
     relative_depth_band,
 )
 from secondeye.multimodal.quality import assess_image_quality
+from secondeye.multimodal.ocr import OcrConsensusConfig
 from secondeye.multimodal.speech import (
     localize_vqa_answer,
     normalize_vietnamese_speech,
@@ -341,6 +342,20 @@ def test_latest_frame_buffer_drops_stale_frames():
     assert np.all(packet.frame == 1)
 
 
+def test_latest_frame_buffer_returns_evenly_sampled_ocr_burst_copies():
+    frames = LatestFrameBuffer(history_size=10)
+    for value in range(10):
+        frames.publish(
+            np.full((2, 2, 3), value, dtype=np.uint8), captured_at=value / 10.0
+        )
+
+    burst = frames.recent(count=3, max_age_seconds=1.0)
+
+    assert [packet.frame_id for packet in burst] == [0, 4, 9]
+    burst[0].frame[:] = 255
+    assert np.all(frames.recent(count=10, max_age_seconds=1.0)[0].frame == 0)
+
+
 def test_async_runtime_processes_latest_available_frame_only():
     frames = LatestFrameBuffer()
     for value in range(5):
@@ -399,6 +414,108 @@ def test_async_runtime_never_reuses_depth_from_another_frame():
         runtime.stop()
 
 
+class _SequenceOcr:
+    def __init__(self, transcripts):
+        self.transcripts = iter(transcripts)
+
+    def read_bgr(self, image):
+        del image
+        transcript = next(self.transcripts)
+        return {
+            "engine": "fake-ocr",
+            "transcript": transcript,
+            "lines": (
+                []
+                if not transcript
+                else [
+                    {
+                        "text": transcript,
+                        "confidence": 0.95,
+                        "box": [0, 0, 20, 10],
+                    }
+                ]
+            ),
+        }
+
+
+def _ocr_quality_frame():
+    pattern = (np.indices((300, 300)).sum(axis=0) % 2 * 255).astype(np.uint8)
+    return np.repeat(pattern[:, :, None], 3, axis=2)
+
+
+def test_multiframe_ocr_uses_agreement_to_ignore_one_unstable_transcript():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        ocr=_SequenceOcr(
+            ["TẦNG 2 PHÒNG 205", "TẦNG 2 PHÒNG 205", "chuỗi nhiễu"]
+        ),
+        tts=tts,
+    )
+
+    result = system.read_text_frames([_ocr_quality_frame() for _ in range(3)])
+
+    assert result["transcript"] == "TẦNG 2 PHÒNG 205"
+    assert result["consensus_score"] == pytest.approx(1.0)
+    assert result["abstained"] is False
+    assert result["evaluated_frame_count"] == 3
+    assert tts.messages == [("TẦNG 2 PHÒNG 205", False)]
+
+
+def test_multiframe_ocr_abstains_when_transcripts_disagree():
+    tts = _FakeTts()
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        ocr=_SequenceOcr(["ABC", "123", "XYZ"]),
+        tts=tts,
+        ocr_consensus_config=OcrConsensusConfig(minimum_consensus=0.80),
+    )
+
+    result = system.read_text_frames([_ocr_quality_frame() for _ in range(3)])
+
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "ocr_temporal_disagreement"
+    assert result["consensus_score"] < 0.80
+    assert tts.messages == [
+        (
+            "Văn bản chưa ổn định giữa các khung hình. "
+            "Hãy giữ camera ổn định rồi thử lại.",
+            False,
+        )
+    ]
+
+
+def test_multiframe_ocr_requires_two_successful_transcripts_when_burst_available():
+    class MostlyBrokenOcr:
+        def __init__(self):
+            self.calls = 0
+
+        def read_bgr(self, image):
+            del image
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("temporary OCR failure")
+            return {
+                "engine": "fake-ocr",
+                "transcript": "MỘT KẾT QUẢ",
+                "lines": [
+                    {
+                        "text": "MỘT KẾT QUẢ",
+                        "confidence": 0.95,
+                        "box": [0, 0, 20, 10],
+                    }
+                ],
+            }
+
+    system = SecondEyeSystem(detector=_FakeDetector(), ocr=MostlyBrokenOcr())
+
+    result = system.read_text_frames([_ocr_quality_frame() for _ in range(3)])
+
+    assert result["abstained"] is True
+    assert result["abstention_reason"] == "ocr_temporal_disagreement"
+    assert len(result["candidate_errors"]) == 2
+
+
 @pytest.mark.parametrize(
     ("raw", "spoken", "abstained"),
     [
@@ -443,6 +560,10 @@ def test_demo_cli_enables_all_pretrained_mvp_features():
     assert args.priority_audio is True
     assert args.semantic_device == "cpu"
     assert args.max_depth_age == 0.5
+    assert args.ocr_burst_frames == 5
+    assert args.ocr_burst_window == 0.6
+    assert args.ocr_max_candidates == 3
+    assert args.ocr_min_consensus == 0.6
     assert args.microphone == "auto"
 
 

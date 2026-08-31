@@ -90,7 +90,7 @@ cản gần. Depth của frame trước không được tái sử dụng trên b
 
 ```text
 Frame camera thô (không chứa bbox/chữ overlay)
-    + phím o -> kiểm tra chất lượng ảnh -> Apple Vision/PaddleOCR -> TTS
+    + phím o -> burst frame gần nhất -> chọn frame tốt -> OCR + đồng thuận -> TTS
     + phím s -> detection hiện tại -> mô tả cảnh tiếng Việt -> TTS
     + phím v -> câu hỏi object phía trước -> detection grounded -> TTS
     + phím m -> microphone -> Whisper STT -> phân loại ý định
@@ -98,7 +98,9 @@ Frame camera thô (không chứa bbox/chữ overlay)
 ```
 
 Frame dùng cho OCR/VQA được sao chép trước khi vẽ bbox, trạng thái và danh sách
-phím. Vì vậy OCR không đọc lại chữ do chính giao diện SecondEye tạo ra.
+phím. Vì vậy OCR không đọc lại chữ do chính giao diện SecondEye tạo ra. Riêng
+OCR giữ một lịch sử camera thưa, giới hạn 10 frame; khi nhấn `o`, tối đa 5 frame
+trong 0,6 giây gần nhất được lấy và tối đa 3 frame đủ chất lượng được OCR.
 
 Câu hỏi số lượng và đồ vật phía trước được trả lời từ detection có confidence từ
 `0.45`, không để BLIP đoán tên vật. Câu tiếng Việt về màu sắc, hành động và trang
@@ -422,6 +424,10 @@ session log.
 | `--depth-medium-threshold` | `0.3333` | Ngưỡng tương đối bắt đầu band `medium`; phải hiệu chuẩn trên validation set |
 | `--depth-near-threshold` | `0.6667` | Ngưỡng tương đối bắt đầu band `near`; không phải mét |
 | `--depth-max-iqr` | `0.35` | Độ phân tán tối đa trong lõi bbox; vượt ngưỡng trả `unknown` |
+| `--ocr-burst-frames` | `5` | Số frame gần nhất lấy từ lịch sử camera khi OCR |
+| `--ocr-burst-window` | `0.60` giây | Cửa sổ thời gian của burst OCR |
+| `--ocr-max-candidates` | `3` | Số frame chất lượng tốt nhất thực sự chạy OCR |
+| `--ocr-min-consensus` | `0.60` | Độ tương đồng tối thiểu giữa ít nhất hai transcript để phát TTS |
 | `--question` | câu hỏi mặc định | Câu hỏi ảnh dùng khi nhấn `v`; mặc định trả lời grounded từ detection |
 | `--microphone` | `auto` | `auto`, index hoặc tên AVFoundation |
 | `--listen-seconds` | `4` | Thời lượng thu mỗi lần nhấn `m` |
@@ -439,7 +445,7 @@ không.
 
 | Phím | Chức năng | Điều gì xảy ra |
 |---|---|---|
-| `o` | OCR | Chụp frame hiện tại, kiểm tra chất lượng, đọc chữ và phát TTS |
+| `o` | OCR | Lấy burst gần nhất, chọn frame nét, kiểm tra đồng thuận rồi mới phát TTS |
 | `s` | Mô tả cảnh | Gom nhóm label/hướng từ detection hiện tại và nói bằng tiếng Việt |
 | `v` | Hỏi ảnh | Câu hỏi grounded dùng detection; dạng màu/hành động/trang phục mới gọi BLIP |
 | `m` | Push-to-talk | Thu microphone, chạy Whisper và định tuyến ý định |
@@ -600,6 +606,24 @@ secondeye image --source /duong/dan/van_ban.jpg --ocr --no-tts
 Trước OCR, quality gate từ chối ảnh có cạnh ngắn dưới 240 px, quá tối, quá sáng
 ít tương phản hoặc quá mờ. Kết quả bị từ chối có `abstained: true` và hướng dẫn
 tiếng Việt thay vì transcript đoán mò.
+
+Trong demo, các transcript được chuẩn hóa rồi so bằng similarity. Hệ thống chọn
+transcript có ít nhất một frame khác đồng thuận cao nhất; nếu điểm thấp hơn
+`--ocr-min-consensus`, kết quả có
+`abstention_reason: "ocr_temporal_disagreement"` và không được đọc thành tiếng.
+Các dòng OCR được sắp theo hàng hình học từ trên xuống, trái sang phải;
+`structured_transcript` giữ ranh giới dòng bằng ký tự xuống dòng.
+
+Apple Vision vẫn là primary. Nếu primary lỗi **hoặc không có dòng được chấp
+nhận**, PaddleOCR mới chạy fallback. Nếu cả hai lỗi, exception ghi cả lỗi primary
+và fallback thay vì làm mất nguyên nhân ban đầu. PaddleOCR không còn tự chấp
+nhận dòng thiếu confidence.
+
+Smoke test engine thật mà không in transcript:
+
+```bash
+secondeye doctor --ocr-smoke-image /duong/dan/van_ban.jpg
+```
 
 ### 9.4 VQA
 
@@ -831,6 +855,26 @@ Một detection có dạng:
   "depth_sample_xyxy": [89, 475, 208, 853]
 }
 ```
+
+Kết quả OCR burst bổ sung các trường:
+
+```json
+{
+  "transcript": "TẦNG 2 PHÒNG 205",
+  "structured_transcript": "TẦNG 2 - PHÒNG 205",
+  "abstained": false,
+  "frame_count": 5,
+  "evaluated_frame_count": 3,
+  "selected_frame_index": 2,
+  "consensus_score": 0.94,
+  "minimum_consensus": 0.60,
+  "candidate_summaries": [],
+  "candidate_errors": []
+}
+```
+
+`consensus_score` chỉ đo tính ổn định giữa frame, không phải xác suất transcript
+đúng. Các engine có thể lặp lại cùng một lỗi, nên vẫn cần benchmark CER/WER.
 
 Các trường `limitations` là một phần của contract; ứng dụng đọc JSON không nên
 bỏ qua chúng khi hiển thị kết quả cho người dùng.
@@ -1141,13 +1185,18 @@ Không dùng các biến này ở lần tải model đầu.
 
 - Chạy lại `./setup_mvp.sh` nếu thiếu
   `~/Library/Caches/SecondEye/venv/bin/secondeye-vision-ocr`.
-- Trên macOS, JSON nên có `engine: "Apple Vision"`. Nếu helper lỗi, hệ thống mới
-  lazy-load PaddleOCR và ghi `fallback_from`/`fallback_error`.
+- Trên macOS, JSON nên có `engine: "Apple Vision"`. Nếu helper lỗi hoặc không có
+  dòng được chấp nhận, hệ thống lazy-load PaddleOCR và ghi
+  `fallback_from`/`fallback_error`.
 - Lần đầu dùng fallback có thể tải/khởi tạo model PaddleOCR.
+- Chạy `secondeye doctor --ocr-smoke-image <ảnh>` bằng đúng virtualenv sẽ dùng
+  trong demo; kiểm tra import đơn thuần không bảo đảm engine khởi tạo được.
 - Giữ ảnh đủ sáng, nét và cạnh ngắn ít nhất 240 px.
 - Đưa văn bản gần camera hơn.
 - Dùng `--no-tts` khi cần đo latency riêng.
 - Không coi confidence cao là bảo đảm transcript đúng.
+- Nếu `abstention_reason` là `ocr_temporal_disagreement`, giữ camera ổn định và
+  thử lại thay vì giảm ngay ngưỡng consensus.
 
 ### 15.10 VQA không dịch câu trả lời
 

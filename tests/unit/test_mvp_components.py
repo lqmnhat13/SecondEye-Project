@@ -141,6 +141,33 @@ def test_semantic_worker_rejects_a_second_command_without_submit_race(tmp_path):
         worker.close()
 
 
+def test_semantic_worker_routes_ocr_burst_to_multiframe_reader(tmp_path):
+    class BurstSystem:
+        def __init__(self):
+            self.received = None
+
+        def read_text_frames(self, frames):
+            self.received = tuple(frames)
+            return {"transcript": "ổn định"}
+
+        def announce(self, text, priority):
+            raise AssertionError(text)
+
+    system = BurstSystem()
+    worker = SemanticWorker(
+        system,
+        SessionLogger(tmp_path / "ocr-burst.jsonl"),
+        default_question="unused",
+    )
+    try:
+        burst = (object(), object(), object())
+        assert worker.submit(SemanticCommand("ocr", frame=burst[-1], frames=burst))
+        _wait_until(lambda: worker.snapshot()[2] is not None)
+        assert system.received == burst
+    finally:
+        worker.close()
+
+
 def test_stt_abstains_on_quiet_wav_before_loading_whisper(tmp_path):
     audio = tmp_path / "quiet.wav"
     with wave.open(str(audio), "wb") as stream:

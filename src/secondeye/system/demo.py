@@ -23,6 +23,7 @@ class SemanticCommand:
     kind: str
     frame: Any
     detection: dict[str, object] | None = None
+    frames: tuple[Any, ...] = ()
 
 
 def _plain_vietnamese(text: str) -> str:
@@ -131,7 +132,7 @@ class SemanticWorker:
             intent_result = {"repeated": self.system.repeat_audio()}
             intent = "repeat"
         elif any(word in plain for word in ("doc chu", "doc van ban", "doc cho")):
-            intent_result = self.system.read_text(command.frame)
+            intent_result = self._read_ocr(command)
             intent = "ocr"
         elif any(word in plain for word in ("mo ta", "xung quanh", "khung canh")):
             intent_result = self.system.describe_scene(
@@ -147,9 +148,16 @@ class SemanticWorker:
             intent = "vqa"
         return {"stt": stt, "intent": intent, "result": intent_result}
 
+    def _read_ocr(self, command: SemanticCommand) -> dict[str, object]:
+        frames = command.frames or (command.frame,)
+        burst_reader = getattr(self.system, "read_text_frames", None)
+        if callable(burst_reader):
+            return burst_reader(frames)
+        return self.system.read_text(command.frame)
+
     def _execute(self, command: SemanticCommand) -> dict[str, object]:
         if command.kind == "ocr":
-            return self.system.read_text(command.frame)
+            return self._read_ocr(command)
         if command.kind == "scene":
             return self.system.describe_scene(
                 command.frame, detection_result=command.detection
@@ -321,14 +329,30 @@ def run_mvp_demo(
                     ord("v"): "vqa",
                     ord("m"): "microphone",
                 }[key]
+                burst_packets = (
+                    capture.frames.recent(
+                        count=args.ocr_burst_frames,
+                        max_age_seconds=args.ocr_burst_window,
+                    )
+                    if kind in {"ocr", "microphone"}
+                    else []
+                )
                 accepted = semantic.submit(
                     SemanticCommand(
                         kind,
                         raw_frame.copy(),
                         None if payload is None or not fresh else payload["detection"],
+                        tuple(packet.frame for packet in burst_packets),
                     )
                 )
-                logger.log("command", {"kind": kind, "accepted": accepted})
+                logger.log(
+                    "command",
+                    {
+                        "kind": kind,
+                        "accepted": accepted,
+                        "ocr_burst_frames": len(burst_packets),
+                    },
+                )
     finally:
         semantic.close()
         runtime.stop()

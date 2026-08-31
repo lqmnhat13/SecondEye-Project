@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 from secondeye.multimodal.depth import DepthFusionConfig, attach_depth_zones
+from secondeye.multimodal.ocr import OcrConsensusConfig
 from secondeye.multimodal.quality import assess_image_quality
 from secondeye.multimodal.questions import (
     normalize_visual_question,
@@ -147,6 +151,7 @@ class SecondEyeSystem:
         tts: Any | None = None,
         orchestrator: SystemOrchestrator | None = None,
         depth_fusion_config: DepthFusionConfig | None = None,
+        ocr_consensus_config: OcrConsensusConfig | None = None,
     ) -> None:
         self.detector = detector
         self.depth = depth
@@ -156,6 +161,7 @@ class SecondEyeSystem:
         self.tts = tts
         self.orchestrator = orchestrator or SystemOrchestrator()
         self.depth_fusion_config = depth_fusion_config or DepthFusionConfig()
+        self.ocr_consensus_config = ocr_consensus_config or OcrConsensusConfig()
 
     def _speak(self, text: str, priority: AlertPriority) -> None:
         if self.tts is None or not text.strip():
@@ -251,11 +257,58 @@ class SecondEyeSystem:
             if key != "relative_inverse_depth"
         }
 
+    @staticmethod
+    def _normalize_ocr_consensus_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKC", text).casefold()
+        return re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE).strip()
+
+    @staticmethod
+    def _finalize_ocr_candidate(
+        result: dict[str, object], quality: Any
+    ) -> dict[str, object]:
+        text = str(result.get("transcript", "")).strip()
+        confidences = [
+            float(line["confidence"])
+            for line in result.get("lines", [])
+            if line.get("confidence") is not None
+        ]
+        mean_confidence = sum(confidences) / len(confidences) if confidences else None
+        return {
+            **result,
+            "abstained": not text
+            or (mean_confidence is not None and mean_confidence < 0.35),
+            "mean_confidence": None
+            if mean_confidence is None
+            else round(mean_confidence, 4),
+            "quality": quality.as_dict(),
+        }
+
     def read_text(self, image: Any) -> dict[str, object]:
+        return self.read_text_frames([image])
+
+    def read_text_frames(self, images: list[Any] | tuple[Any, ...]) -> dict[str, object]:
+        """Read a short burst and speak only a temporally stable transcript."""
         if self.ocr is None:
             raise RuntimeError("OCR chưa được bật")
-        quality = assess_image_quality(image)
-        if not quality.acceptable:
+        frames = list(images)
+        if not frames:
+            raise ValueError("OCR cần ít nhất một frame")
+        assessed = [assess_image_quality(image) for image in frames]
+        ranked = sorted(
+            (
+                (index, quality)
+                for index, quality in enumerate(assessed)
+                if quality.acceptable
+            ),
+            key=lambda item: (
+                item[1].sharpness,
+                item[1].contrast,
+                -abs(item[1].brightness - 128.0),
+            ),
+            reverse=True,
+        )[: self.ocr_consensus_config.max_candidates]
+        if not ranked:
+            quality = assessed[-1]
             result = {
                 "schema_version": "1.0",
                 "module": "ocr",
@@ -264,29 +317,130 @@ class SecondEyeSystem:
                 "reason": quality.reason,
                 "transcript": "",
                 "quality": quality.as_dict(),
+                "frame_count": len(frames),
+                "evaluated_frame_count": 0,
+                "consensus_score": None,
             }
             self._speak(quality.guidance_vi, AlertPriority.SEMANTIC)
             self.orchestrator.transition(SystemState.READ)
             return result
-        result = self.ocr.read_bgr(image)
-        text = str(result.get("transcript", "")).strip()
-        confidences = [
-            float(line["confidence"])
-            for line in result.get("lines", [])
-            if line.get("confidence") is not None
+
+        candidates: list[tuple[int, dict[str, object]]] = []
+        errors: list[dict[str, object]] = []
+        for index, quality in ranked:
+            try:
+                raw_result = self.ocr.read_bgr(frames[index])
+            except Exception as exc:
+                errors.append(
+                    {
+                        "frame_index": index,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+                continue
+            candidates.append(
+                (index, self._finalize_ocr_candidate(raw_result, quality))
+            )
+        if not candidates:
+            detail = "; ".join(
+                f"frame {item['frame_index']}: {item['message']}" for item in errors
+            )
+            raise RuntimeError(f"OCR thất bại trên mọi frame: {detail}")
+
+        nonempty = [
+            (index, result)
+            for index, result in candidates
+            if self._normalize_ocr_consensus_text(
+                str(result.get("transcript", ""))
+            )
         ]
-        mean_confidence = sum(confidences) / len(confidences) if confidences else None
-        abstained = not text or (mean_confidence is not None and mean_confidence < 0.35)
-        spoken = (
-            text if not abstained else "Tôi không đọc được văn bản đủ rõ trong ảnh."
+        consensus_score = 1.0
+        if len(ranked) > 1 and len(nonempty) < 2:
+            selected_index, selected = nonempty[0] if nonempty else candidates[0]
+            consensus_score = 0.0
+        elif len(nonempty) >= 2:
+            scored: list[tuple[float, int, dict[str, object]]] = []
+            for index, result in nonempty:
+                text = self._normalize_ocr_consensus_text(
+                    str(result.get("transcript", ""))
+                )
+                similarities = [
+                    SequenceMatcher(
+                        None,
+                        text,
+                        self._normalize_ocr_consensus_text(
+                            str(other.get("transcript", ""))
+                        ),
+                    ).ratio()
+                    for other_index, other in nonempty
+                    if other_index != index
+                ]
+                # One agreeing peer is enough to outvote a single unstable
+                # frame in a three-frame burst. With two frames this is their
+                # direct similarity.
+                score = max(similarities)
+                scored.append((score, index, result))
+            consensus_score, selected_index, selected = max(
+                scored,
+                key=lambda item: (
+                    item[0],
+                    float(item[2].get("mean_confidence") or 0.0),
+                    float(item[2]["quality"]["sharpness"]),
+                ),
+            )
+        elif nonempty:
+            selected_index, selected = nonempty[0]
+        else:
+            selected_index, selected = candidates[0]
+
+        text = str(selected.get("transcript", "")).strip()
+        abstained = bool(selected.get("abstained", False))
+        abstention_reason = (
+            "no_text"
+            if not text
+            else ("low_mean_confidence" if abstained else None)
         )
+        if (
+            len(ranked) > 1
+            and consensus_score < self.ocr_consensus_config.minimum_consensus
+        ):
+            abstained = True
+            abstention_reason = "ocr_temporal_disagreement"
+        if not abstained:
+            spoken = text
+        elif abstention_reason == "ocr_temporal_disagreement":
+            spoken = (
+                "Văn bản chưa ổn định giữa các khung hình. "
+                "Hãy giữ camera ổn định rồi thử lại."
+            )
+        else:
+            spoken = "Tôi không đọc được văn bản đủ rõ trong ảnh."
         result = {
-            **result,
+            **selected,
             "abstained": abstained,
-            "mean_confidence": None
-            if mean_confidence is None
-            else round(mean_confidence, 4),
-            "quality": quality.as_dict(),
+            "abstention_reason": abstention_reason,
+            "frame_count": len(frames),
+            "evaluated_frame_count": len(candidates),
+            "selected_frame_index": selected_index,
+            "consensus_score": round(consensus_score, 4),
+            "minimum_consensus": self.ocr_consensus_config.minimum_consensus,
+            "candidate_summaries": [
+                {
+                    "frame_index": index,
+                    "engine": candidate.get("engine"),
+                    "has_text": bool(str(candidate.get("transcript", "")).strip()),
+                    "mean_confidence": candidate.get("mean_confidence"),
+                    "line_count": len(candidate.get("lines", [])),
+                    "quality": candidate.get("quality"),
+                }
+                for index, candidate in candidates
+            ],
+            "candidate_errors": errors,
+            "limitations": list(selected.get("limitations", []))
+            + [
+                "Đồng thuận nhiều frame chỉ đo độ ổn định; các frame có thể lặp lại cùng một lỗi OCR."
+            ],
         }
         self._speak(spoken, AlertPriority.SEMANTIC)
         self.orchestrator.transition(SystemState.READ)
