@@ -8,7 +8,11 @@ import unicodedata
 from difflib import SequenceMatcher
 from typing import Any
 
-from secondeye.multimodal.depth import DepthFusionConfig, attach_depth_zones
+from secondeye.multimodal.depth import (
+    DepthFusionConfig,
+    attach_bbox_proximity_zones,
+    attach_depth_zones,
+)
 from secondeye.multimodal.ocr import OcrConsensusConfig
 from secondeye.multimodal.quality import assess_image_quality
 from secondeye.multimodal.questions import (
@@ -163,6 +167,20 @@ class SecondEyeSystem:
         self.depth_fusion_config = depth_fusion_config or DepthFusionConfig()
         self.ocr_consensus_config = ocr_consensus_config or OcrConsensusConfig()
 
+    def warmup(self) -> None:
+        """Warm latency-sensitive vision models before starting live capture."""
+        self.detector.warmup()
+        if self.depth is not None:
+            depth_warmup = getattr(self.depth, "warmup", None)
+            if callable(depth_warmup):
+                depth_warmup()
+
+    def warmup_frame(self, image: Any) -> None:
+        """Warm shape-specific backend kernels with an actual camera frame."""
+        self.detector.predict_bgr(image)
+        if self.depth is not None:
+            self.depth.predict_bgr(image)
+
     def _speak(self, text: str, priority: AlertPriority) -> None:
         if self.tts is None or not text.strip():
             return
@@ -204,14 +222,30 @@ class SecondEyeSystem:
         depth_usable = depth_result is not None and bool(
             depth_result.get("usable", True)
         )
+        proximity_evaluable = depth_usable
         if depth_usable:
             detections = attach_depth_zones(
                 detections,
                 depth_result["relative_inverse_depth"],
                 config=self.depth_fusion_config,
             )
+        else:
+            image_size = detection.get("image_size")
+            if isinstance(image_size, dict):
+                width = int(image_size.get("width", 0))
+                height = int(image_size.get("height", 0))
+                if width > 0 and height > 0:
+                    detections = attach_bbox_proximity_zones(
+                        detections,
+                        frame_width=width,
+                        frame_height=height,
+                        config=self.depth_fusion_config,
+                    )
+                    proximity_evaluable = True
         alerts = (
-            self.orchestrator.obstacle_alerts(detections) if depth_usable else []
+            self.orchestrator.obstacle_alerts(detections)
+            if proximity_evaluable
+            else []
         )
         if not alerts and self.orchestrator.state is SystemState.OBSTACLE:
             # Detection-only frames must not erase confirmation accumulated by
@@ -228,6 +262,13 @@ class SecondEyeSystem:
             "detection": {**detection, "detections": detections},
             "depth": self._serializable_depth(depth_result),
             "depth_used_for_alert": depth_usable,
+            "alert_evidence": (
+                "relative_depth_and_bbox"
+                if alerts and depth_usable
+                else "bbox_geometry_fast_path"
+                if alerts
+                else None
+            ),
             "depth_age_ms": None if depth_age_ms is None else round(depth_age_ms, 2),
             "alerts": [
                 {

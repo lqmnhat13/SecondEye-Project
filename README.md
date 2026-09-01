@@ -88,6 +88,11 @@ Với iPhone Continuity Camera:
 ./run_mvp.sh --camera 1 --microphone auto
 ```
 
+Camera phải hướng ra môi trường di chuyển. Trên MacBook, `--camera 0` thường là
+FaceTime HD Camera hướng vào người dùng nên detector sẽ nhận chính người dùng là
+`person`. Khi dùng Continuity Camera, đặt iPhone hướng ra phía trước và chọn đúng
+camera index.
+
 `--microphone auto` là mặc định và tự ưu tiên microphone tích hợp theo tên thiết
 bị, nên không phụ thuộc index AVFoundation. Khi cần, vẫn có thể truyền index hoặc
 tên chính xác, ví dụ `--microphone 2` hoặc
@@ -143,7 +148,7 @@ Kiểm tra riêng giọng Việt trước khi mở camera:
 ```bash
 secondeye speech-test \
   --voice Linh --speech-rate 165 \
-  --text "Cảnh báo, có ghế ở gần phía trước."
+  --text "Cẩn thận, ghế phía trước."
 ```
 
 ## Chạy các module trên một ảnh
@@ -188,8 +193,10 @@ secondeye-detection camera-demo --camera 0
 
 - Chỉ các lớp trong `risk.candidate_classes` mới là ứng viên vật cản.
 - Bbox phải nằm trong vùng di chuyển trung tâm.
-- Depth phải xác nhận band `near` trước khi phát cảnh báo gần.
-- `near/medium/far` là độ sâu tương đối theo frame, không phải mét.
+- Proximity fusion phải xác nhận band `near` trước khi phát cảnh báo gần.
+- Fusion kết hợp relative depth với tỷ lệ diện tích/chiều cao bbox trong ảnh;
+  bbox rất lớn được coi là gần, bbox rất nhỏ được coi là xa.
+- `near/medium/far` vẫn là band heuristic, không phải khoảng cách mét.
 - Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
 - TTS mặc định dùng giọng `Linh` (`vi_VN`) ở tốc độ 165 từ/phút.
 - Câu trả lời VQA ngắn được dịch bằng từ vựng và mẫu câu thị giác có kiểm soát.

@@ -52,41 +52,52 @@ class SystemOrchestrator:
         self,
         *,
         cooldown_seconds: float = 4.0,
-        confirmation_frames: int = 2,
+        confirmation_frames: int = 1,
+        rearm_absent_frames: int = 3,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if cooldown_seconds < 0:
             raise ValueError("cooldown_seconds không được âm")
         if confirmation_frames <= 0:
             raise ValueError("confirmation_frames phải dương")
+        if rearm_absent_frames <= 0:
+            raise ValueError("rearm_absent_frames phải dương")
         self.cooldown_seconds = cooldown_seconds
         self.confirmation_frames = confirmation_frames
+        self.rearm_absent_frames = rearm_absent_frames
         self.clock = clock
         self.state = SystemState.IDLE
         self._last_emitted: dict[str, float] = {}
         self._near_streaks: dict[str, int] = {}
+        self._active_near: set[str] = set()
+        self._absent_streaks: dict[str, int] = {}
 
     def transition(self, state: SystemState) -> None:
         self.state = state
 
     def obstacle_alerts(self, detections: list[dict[str, Any]]) -> list[Alert]:
-        """Emit only depth-confirmed near central obstacle candidates."""
+        """Emit reliable near central obstacle alerts with cooldown."""
         alerts: list[Alert] = []
         now = self.clock()
         visible_near: dict[str, str] = {}
         for detection in detections:
             if not detection.get("obstacle_candidate"):
                 continue
-            if detection.get("depth_zone") != "near":
+            proximity = detection.get("proximity_zone", detection.get("depth_zone"))
+            if proximity != "near":
                 continue
             label = str(detection["label"])
             direction = str(detection.get("direction", "center"))
             key = f"near:{label}:{direction}"
             visible_near[key] = label
         for key, label in visible_near.items():
+            self._absent_streaks.pop(key, None)
             self._near_streaks[key] = self._near_streaks.get(key, 0) + 1
             if self._near_streaks[key] < self.confirmation_frames:
                 continue
+            if key in self._active_near:
+                continue
+            self._active_near.add(key)
             last = self._last_emitted.get(key)
             if last is not None and now - last < self.cooldown_seconds:
                 continue
@@ -95,13 +106,20 @@ class SystemOrchestrator:
             alerts.append(
                 Alert(
                     key=key,
-                    text=f"Cảnh báo, có {readable} ở gần phía trước.",
+                    text=f"Cẩn thận, {readable} phía trước.",
                     priority=AlertPriority.OBSTACLE,
                     state=SystemState.OBSTACLE,
                 )
             )
-        for key in set(self._near_streaks) - set(visible_near):
+        known_keys = set(self._near_streaks) | self._active_near
+        for key in known_keys - set(visible_near):
+            absent = self._absent_streaks.get(key, 0) + 1
+            if absent < self.rearm_absent_frames:
+                self._absent_streaks[key] = absent
+                continue
+            self._absent_streaks.pop(key, None)
             self._near_streaks.pop(key, None)
+            self._active_near.discard(key)
         alerts.sort(key=lambda item: item.priority, reverse=True)
         if alerts:
             self.state = SystemState.OBSTACLE
@@ -121,3 +139,5 @@ class SystemOrchestrator:
     def reset(self) -> None:
         self.state = SystemState.IDLE
         self._near_streaks.clear()
+        self._active_near.clear()
+        self._absent_streaks.clear()

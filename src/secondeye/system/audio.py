@@ -28,6 +28,7 @@ class PriorityAudioManager:
         self._sequence = 0
         self._active_priority: AlertPriority | None = None
         self._last_text: str | None = None
+        self._last_error: str | None = None
         self._closed = False
         self._worker = threading.Thread(
             target=self._run, name="secondeye-audio-owner", daemon=True
@@ -38,6 +39,21 @@ class PriorityAudioManager:
     def last_text(self) -> str | None:
         with self._condition:
             return self._last_text
+
+    @property
+    def last_error(self) -> str | None:
+        with self._condition:
+            return self._last_error
+
+    def _record_error(self, exc: Exception) -> None:
+        with self._condition:
+            self._last_error = f"{type(exc).__name__}: {exc}"
+
+    def _stop_backend(self) -> None:
+        try:
+            self.backend.stop()
+        except Exception as exc:  # keep the audio owner alive after backend faults
+            self._record_error(exc)
 
     def submit(
         self,
@@ -62,7 +78,7 @@ class PriorityAudioManager:
             )
             self._condition.notify()
         if should_interrupt:
-            self.backend.stop()
+            self._stop_backend()
         return True
 
     def repeat(self) -> bool:
@@ -78,14 +94,14 @@ class PriorityAudioManager:
         with self._condition:
             self._queue.clear()
             self._active_priority = None
-        self.backend.stop()
+        self._stop_backend()
 
     def close(self) -> None:
         with self._condition:
             self._closed = True
             self._queue.clear()
             self._condition.notify_all()
-        self.backend.stop()
+        self._stop_backend()
         self._worker.join(timeout=2.0)
 
     def _run(self) -> None:
@@ -99,6 +115,9 @@ class PriorityAudioManager:
             try:
                 self.backend.speak(item.text, interrupt=True)
                 self.backend.wait()
+            except Exception as exc:
+                self._record_error(exc)
+                self._stop_backend()
             finally:
                 with self._condition:
                     self._active_priority = None

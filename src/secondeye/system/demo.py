@@ -33,6 +33,32 @@ def _plain_vietnamese(text: str) -> str:
     )
 
 
+def voice_intent_from_transcript(text: str) -> str:
+    """Classify a small command vocabulary while tolerating common STT errors."""
+    plain = _plain_vietnamese(text)
+    polite_prefixes = ("hay ", "vui long ", "lam on ")
+    command = plain
+    for prefix in polite_prefixes:
+        if command.startswith(prefix):
+            command = command[len(prefix) :]
+            break
+    if command in {"dung", "dung lai", "im lang", "stop", "thoi"}:
+        return "stop"
+    if "lap lai" in command:
+        return "repeat"
+    if any(
+        phrase in command
+        for phrase in ("doc chu", "doc van ban", "doc cho", "loc chu")
+    ):
+        return "ocr"
+    if any(
+        phrase in command
+        for phrase in ("mo ta", "xung quanh", "khung canh", "khong canh")
+    ):
+        return "scene"
+    return "vqa"
+
+
 def copy_frame_for_display(raw_frame: Any) -> Any:
     """Keep UI drawings isolated from frames sent to OCR/VQA."""
     return raw_frame.copy()
@@ -123,29 +149,24 @@ class SemanticWorker:
                 "Tôi không nghe rõ yêu cầu. Hãy thử lại.", AlertPriority.ERROR
             )
             return {"stt": stt, "intent": "unknown", "abstained": True}
-        plain = _plain_vietnamese(transcript)
-        if any(word in plain for word in ("dung", "im lang", "stop")):
+        intent = voice_intent_from_transcript(transcript)
+        if intent == "stop":
             self.system.stop_audio()
             intent_result: dict[str, object] = {"stopped": True}
-            intent = "stop"
-        elif "lap lai" in plain:
+        elif intent == "repeat":
             intent_result = {"repeated": self.system.repeat_audio()}
-            intent = "repeat"
-        elif any(word in plain for word in ("doc chu", "doc van ban", "doc cho")):
+        elif intent == "ocr":
             intent_result = self._read_ocr(command)
-            intent = "ocr"
-        elif any(word in plain for word in ("mo ta", "xung quanh", "khung canh")):
+        elif intent == "scene":
             intent_result = self.system.describe_scene(
                 command.frame, detection_result=command.detection
             )
-            intent = "scene"
         else:
             intent_result = self.system.ask(
                 command.frame,
                 transcript,
                 detection_result=command.detection,
             )
-            intent = "vqa"
         return {"stt": stt, "intent": intent, "result": intent_result}
 
     def _read_ocr(self, command: SemanticCommand) -> dict[str, object]:
@@ -220,7 +241,7 @@ def run_mvp_demo(
             "controls": "o:ocr s:scene v:vqa m:microphone r:repeat x:stop q:quit",
         },
     )
-    system.detector.warmup()
+    system.warmup()
     capture = LatestFrameCapture(
         cv2,
         args.camera,
@@ -228,6 +249,9 @@ def run_mvp_demo(
         height=args.height,
         target_fps=args.camera_fps,
     ).start()
+    warmup_packet = capture.frames.wait_for_new(-1, timeout=2.0)
+    if warmup_packet is not None:
+        system.warmup_frame(warmup_packet.frame)
     runtime = AsyncVisionRuntime(
         system,
         capture.frames,
@@ -241,6 +265,10 @@ def run_mvp_demo(
         default_question=args.question,
         recorder_factory=recorder_factory,
         transcriber_factory=transcriber_factory,
+    )
+    logger.log(
+        "system_ready",
+        {"live_frame_warmup": warmup_packet is not None},
     )
     system.announce("SecondEye đã sẵn sàng.", AlertPriority.INFO)
     text_renderer = UnicodeTextRenderer()

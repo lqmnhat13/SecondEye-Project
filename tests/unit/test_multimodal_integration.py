@@ -6,6 +6,7 @@ import pytest
 
 from secondeye.multimodal.depth import (
     DepthFusionConfig,
+    attach_bbox_proximity_zones,
     attach_depth_zones,
     relative_depth_band,
 )
@@ -67,6 +68,61 @@ def test_attach_depth_zones_abstains_for_mixed_depth_bbox():
     assert enriched[0]["depth_iqr"] > 0.35
 
 
+def test_large_obstacle_candidate_uses_bbox_fallback_when_depth_is_mixed():
+    depth = np.full((100, 100), 0.1, dtype=np.float32)
+    depth[15:50, 20:80] = 0.9
+    detections = [
+        {
+            "label": "person",
+            "bbox_xyxy": [0, 0, 100, 100],
+            "obstacle_candidate": True,
+        }
+    ]
+
+    enriched = attach_depth_zones(detections, depth)
+
+    assert enriched[0]["depth_iqr"] > 0.35
+    assert enriched[0]["bbox_proximity_zone"] == "near"
+    assert enriched[0]["depth_zone"] == "near"
+    assert enriched[0]["depth_reason"] == (
+        "bbox_geometry_fallback_ambiguous_relative_depth"
+    )
+
+
+def test_small_obstacle_candidate_is_far_even_if_relative_depth_is_high():
+    depth = np.full((100, 100), 0.9, dtype=np.float32)
+    detections = [
+        {
+            "label": "bottle",
+            "bbox_xyxy": [45, 45, 55, 55],
+            "obstacle_candidate": True,
+        }
+    ]
+
+    enriched = attach_depth_zones(detections, depth)
+
+    assert enriched[0]["relative_depth_band"] == "near"
+    assert enriched[0]["bbox_proximity_zone"] == "far"
+    assert enriched[0]["depth_zone"] == "far"
+    assert enriched[0]["depth_reason"] == "bbox_geometry_with_relative_depth"
+
+
+def test_fast_bbox_proximity_distinguishes_large_near_from_small_far():
+    detections = [
+        {"label": "person", "bbox_xyxy": [0, 0, 100, 100]},
+        {"label": "bottle", "bbox_xyxy": [45, 45, 55, 55]},
+    ]
+
+    enriched = attach_bbox_proximity_zones(
+        detections,
+        frame_width=100,
+        frame_height=100,
+    )
+
+    assert enriched[0]["proximity_zone"] == "near"
+    assert enriched[1]["proximity_zone"] == "far"
+
+
 def test_relative_depth_thresholds_can_be_calibrated_on_validation_data():
     config = DepthFusionConfig(medium_threshold=0.4, near_threshold=0.8)
 
@@ -85,9 +141,13 @@ def test_attach_depth_zones_rejects_bbox_outside_depth_map():
     assert enriched[0]["depth_reason"] == "invalid_bbox"
 
 
-def test_orchestrator_requires_depth_confirmation_and_applies_cooldown():
+def test_orchestrator_requires_confirmation_and_rearms_after_absence():
     clock = SimpleNamespace(value=10.0)
-    orchestrator = SystemOrchestrator(cooldown_seconds=4.0, clock=lambda: clock.value)
+    orchestrator = SystemOrchestrator(
+        cooldown_seconds=4.0,
+        confirmation_frames=2,
+        clock=lambda: clock.value,
+    )
     detection = {
         "label": "chair",
         "direction": "center",
@@ -103,7 +163,63 @@ def test_orchestrator_requires_depth_confirmation_and_applies_cooldown():
     assert orchestrator.obstacle_alerts([detection]) == []
 
     clock.value += 4.1
+    assert orchestrator.obstacle_alerts([detection]) == []
+    assert orchestrator.obstacle_alerts([]) == []
+    assert orchestrator.obstacle_alerts([]) == []
+    assert orchestrator.obstacle_alerts([]) == []
+    assert orchestrator.obstacle_alerts([detection]) == []
     assert len(orchestrator.obstacle_alerts([detection])) == 1
+
+
+def test_orchestrator_does_not_rearm_on_a_single_detection_miss():
+    orchestrator = SystemOrchestrator(rearm_absent_frames=3)
+    detection = {
+        "label": "person",
+        "direction": "center",
+        "obstacle_candidate": True,
+        "depth_zone": "near",
+    }
+
+    assert len(orchestrator.obstacle_alerts([detection])) == 1
+    assert orchestrator.obstacle_alerts([]) == []
+    assert orchestrator.obstacle_alerts([detection]) == []
+
+
+def test_orchestrator_warns_on_first_reliable_near_detection_by_default():
+    orchestrator = SystemOrchestrator()
+    detection = {
+        "label": "chair",
+        "direction": "center",
+        "obstacle_candidate": True,
+        "depth_zone": "near",
+    }
+
+    alerts = orchestrator.obstacle_alerts([detection])
+
+    assert len(alerts) == 1
+    assert alerts[0].text == "Cẩn thận, ghế phía trước."
+
+
+def test_system_fast_path_warns_for_large_bbox_without_waiting_for_depth():
+    tts = _FakeTts()
+    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth(), tts=tts)
+    detection = {
+        "detections": [
+            {
+                "label": "chair",
+                "bbox_xyxy": [0, 0, 100, 100],
+                "direction": "center",
+                "obstacle_candidate": True,
+            }
+        ],
+        "image_size": {"width": 100, "height": 100},
+    }
+
+    result = system.fuse_detection_and_depth(detection, None)
+
+    assert len(result["alerts"]) == 1
+    assert result["alert_evidence"] == "bbox_geometry_fast_path"
+    assert result["depth_used_for_alert"] is False
 
 
 def test_two_objects_in_one_frame_do_not_fake_temporal_confirmation():
@@ -197,18 +313,21 @@ def test_second_eye_system_integrates_detection_depth_risk_and_tts():
     tts = _FakeTts()
     system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth(), tts=tts)
 
-    system.process_frame(np.zeros((6, 6, 3), dtype=np.uint8))
     result = system.process_frame(np.zeros((6, 6, 3), dtype=np.uint8))
 
     assert result["mode"] == "pretrained_integration"
     assert result["state"] == "OBSTACLE"
     assert result["detection"]["detections"][0]["depth_zone"] == "near"
-    assert result["alerts"][0]["text"] == "Cảnh báo, có ghế ở gần phía trước."
-    assert tts.messages == [("Cảnh báo, có ghế ở gần phía trước.", True)]
+    assert result["alerts"][0]["text"] == "Cẩn thận, ghế phía trước."
+    assert tts.messages == [("Cẩn thận, ghế phía trước.", True)]
 
 
 def test_detection_only_frame_does_not_erase_depth_confirmation_streak():
-    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth())
+    system = SecondEyeSystem(
+        detector=_FakeDetector(),
+        depth=_FakeDepth(),
+        orchestrator=SystemOrchestrator(confirmation_frames=2),
+    )
     detection = _FakeDetector().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
     depth = _FakeDepth().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
 

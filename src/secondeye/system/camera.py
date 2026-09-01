@@ -268,7 +268,9 @@ class AsyncVisionRuntime:
     def _run(self) -> None:
         last_frame_id = -1
         last_detection_started = float("-inf")
-        last_depth_started = float("-inf")
+        # Rate-limit from completion so a slow depth pass cannot immediately
+        # schedule another depth pass and starve detection-only frames.
+        last_depth_completed = float("-inf")
         latest_depth: dict[str, object] | None = None
         latest_depth_at: float | None = None
         latest_depth_frame_id: int | None = None
@@ -289,11 +291,46 @@ class AsyncVisionRuntime:
                 started = self.clock()
                 last_detection_started = started
 
-                if (
+                should_run_depth = (
                     self.system.depth is not None
-                    and started - last_depth_started >= self.depth_interval
-                ):
-                    last_depth_started = started
+                    and started - last_depth_completed >= self.depth_interval
+                )
+                detection = self.system.detector.predict_bgr(packet.frame)
+                detection_completed = self.clock()
+                fast_path_enabled = (
+                    self.system.orchestrator.confirmation_frames == 1
+                )
+                if should_run_depth and fast_path_enabled:
+                    # A clearly large central bbox can trigger the emergency
+                    # fast path now; depth enrichment continues afterwards.
+                    preliminary = self.system.fuse_detection_and_depth(
+                        detection,
+                        None,
+                        started_at=started,
+                    )
+                    if preliminary["alerts"]:
+                        preliminary.update(
+                            {
+                                "frame_id": packet.frame_id,
+                                "captured_at": packet.captured_at,
+                                "completed_at": detection_completed,
+                                "result_age_ms": round(
+                                    max(
+                                        0.0,
+                                        detection_completed - packet.captured_at,
+                                    )
+                                    * 1000.0,
+                                    2,
+                                ),
+                                "depth_source_frame_id": latest_depth_frame_id,
+                                "depth_synchronized": False,
+                                "depth_rejection_reason": "fast_path_pending_depth",
+                            }
+                        )
+                        with self._lock:
+                            self._latest = preliminary
+
+                if should_run_depth:
                     latest_depth = self.system.depth.predict_bgr(packet.frame)
                     # Age from the source frame capture time, not from model
                     # completion, so stale depth cannot be treated as fresh.
@@ -311,20 +348,22 @@ class AsyncVisionRuntime:
                             else 0.8 * self.measured_depth_fps + 0.2 * instant
                         )
                     previous_depth_completed = depth_completed
+                    last_depth_completed = depth_completed
 
-                detection = self.system.detector.predict_bgr(packet.frame)
-                completed = self.clock()
                 if (
                     previous_detection_completed is not None
-                    and completed > previous_detection_completed
+                    and detection_completed > previous_detection_completed
                 ):
-                    instant = 1.0 / (completed - previous_detection_completed)
+                    instant = 1.0 / (
+                        detection_completed - previous_detection_completed
+                    )
                     self.measured_detection_fps = (
                         instant
                         if self.measured_detection_fps == 0.0
                         else 0.8 * self.measured_detection_fps + 0.2 * instant
                     )
-                previous_detection_completed = completed
+                previous_detection_completed = detection_completed
+                completed = self.clock()
                 depth_age = (
                     None
                     if latest_depth_at is None

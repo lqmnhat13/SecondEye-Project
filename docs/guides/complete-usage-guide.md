@@ -74,7 +74,7 @@ Camera Mac/iPhone
        -> YOLO26m detection
        -> Depth Anything (nếu bật và đến chu kỳ depth)
        -> gắn near/medium/far vào bbox
-       -> risk fusion + xác nhận nhiều frame + cooldown
+       -> risk fusion + cảnh báo theo lần xuất hiện + cooldown
     -> overlay cửa sổ OpenCV
     -> audio priority queue
     -> macOS TTS
@@ -121,7 +121,7 @@ Một detection chỉ trở thành cảnh báo khi đồng thời thỏa mãn:
 3. Tâm bbox nằm trong 40% vùng giữa ảnh.
 4. Depth còn đủ mới và gắn band `near`.
 5. Cùng khóa `label + direction` xuất hiện trong 2 frame xác nhận.
-6. Cảnh báo đó không nằm trong cooldown 4 giây.
+6. Cảnh báo đó chưa phát trong lần xuất hiện hiện tại và không nằm trong cooldown 4 giây.
 
 Nếu depth tắt hoặc quá cũ, detection vẫn hiển thị nhưng không được phát thành
 câu “ở gần”. `near/medium/far` là độ sâu tương đối trong từng frame, không phải
@@ -290,6 +290,11 @@ export TRANSFORMERS_OFFLINE=1
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 ./run_mvp.sh --camera 0
 ```
+
+Camera phải hướng ra môi trường di chuyển. Trên MacBook, camera index `0` thường
+là FaceTime HD Camera hướng vào người dùng; khi đó cảnh báo `person` là người đang
+ngồi trước máy, không phải vật cản theo hướng di chuyển. Hãy dùng camera ngoài
+hướng ra phía trước, ví dụ `./run_mvp.sh --camera 1` với iPhone Continuity Camera.
 
 Nếu model chưa cache, chế độ offline sẽ làm module tương ứng không tải được.
 
@@ -583,11 +588,13 @@ secondeye image \
   --no-tts
 ```
 
-Mỗi bbox có thể nhận thêm `relative_depth`, `depth_zone`, `depth_confidence`,
-`depth_iqr`, `depth_reason` và `depth_sample_xyxy`. Không diễn giải
-`relative_depth` thành mét. `depth_zone=unknown` là abstention chủ động khi vùng
-lấy mẫu thiếu dữ liệu hoặc chứa nhiều lớp độ sâu. `depth_confidence = 1 - IQR`
-chỉ là độ nhất quán không gian heuristic, không phải xác suất đúng đã calibration.
+Mỗi bbox có thể nhận thêm `relative_depth`, `relative_depth_band`, `depth_zone`,
+`depth_confidence`, `depth_iqr`, `depth_reason`, `depth_sample_xyxy`,
+`bbox_area_fraction`, `bbox_height_fraction` và `bbox_proximity_zone`. Không diễn
+giải các giá trị này thành mét. Với ứng viên vật cản, bbox rất lớn/nhỏ là tín hiệu
+fallback khi relative depth bị trộn foreground/background; vùng kích thước trung
+bình vẫn trả `unknown` nếu depth mơ hồ. `depth_confidence = 1 - IQR` chỉ là độ
+nhất quán không gian heuristic, không phải xác suất đúng đã calibration.
 
 ### 9.3 OCR
 
@@ -723,7 +730,7 @@ Tùy chỉnh:
 secondeye speech-test \
   --voice Linh \
   --speech-rate 165 \
-  --text "Cảnh báo, có ghế ở gần phía trước."
+  --text "Cẩn thận, ghế phía trước."
 ```
 
 `speech-rate` phải dương. TTS chạy bằng lệnh macOS `say`, không gửi nội dung tới

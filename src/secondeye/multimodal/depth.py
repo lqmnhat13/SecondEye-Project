@@ -25,6 +25,10 @@ class DepthFusionConfig:
     bottom_inset: float = 0.10
     min_valid_pixels: int = 16
     max_iqr: float = 0.35
+    medium_bbox_area_fraction: float = 0.025
+    near_bbox_area_fraction: float = 0.12
+    medium_bbox_height_fraction: float = 0.25
+    near_bbox_height_fraction: float = 0.60
 
     def __post_init__(self) -> None:
         if not 0.0 < self.medium_threshold < self.near_threshold < 1.0:
@@ -44,9 +48,43 @@ class DepthFusionConfig:
             raise ValueError("min_valid_pixels phải dương")
         if not 0.0 < self.max_iqr <= 1.0:
             raise ValueError("max_iqr phải nằm trong (0, 1]")
+        if not (
+            0.0
+            < self.medium_bbox_area_fraction
+            < self.near_bbox_area_fraction
+            < 1.0
+        ):
+            raise ValueError("ngưỡng bbox area phải thỏa 0 < medium < near < 1")
+        if not (
+            0.0
+            < self.medium_bbox_height_fraction
+            < self.near_bbox_height_fraction
+            <= 1.0
+        ):
+            raise ValueError("ngưỡng bbox height phải thỏa 0 < medium < near <= 1")
 
 
 DEFAULT_DEPTH_FUSION_CONFIG = DepthFusionConfig()
+
+
+def _bbox_proximity_band(
+    *,
+    area_fraction: float,
+    height_fraction: float,
+    config: DepthFusionConfig,
+) -> str:
+    """Estimate coarse proximity from how much of the frame a bbox occupies."""
+    if (
+        area_fraction >= config.near_bbox_area_fraction
+        or height_fraction >= config.near_bbox_height_fraction
+    ):
+        return "near"
+    if (
+        area_fraction >= config.medium_bbox_area_fraction
+        or height_fraction >= config.medium_bbox_height_fraction
+    ):
+        return "medium"
+    return "far"
 
 
 def relative_depth_band(
@@ -60,6 +98,44 @@ def relative_depth_band(
     if value >= config.medium_threshold:
         return "medium"
     return "far"
+
+
+def attach_bbox_proximity_zones(
+    detections: list[dict[str, Any]],
+    *,
+    frame_width: int,
+    frame_height: int,
+    config: DepthFusionConfig = DEFAULT_DEPTH_FUSION_CONFIG,
+) -> list[dict[str, Any]]:
+    """Attach a fast coarse proximity band using only bbox geometry."""
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError("kích thước frame phải dương")
+    enriched: list[dict[str, Any]] = []
+    for original in detections:
+        item = dict(original)
+        x1, y1, x2, y2 = (float(value) for value in item["bbox_xyxy"])
+        x1, x2 = max(0.0, min(x1, frame_width)), max(
+            0.0, min(x2, frame_width)
+        )
+        y1, y2 = max(0.0, min(y1, frame_height)), max(
+            0.0, min(y2, frame_height)
+        )
+        box_width = max(0.0, x2 - x1)
+        box_height = max(0.0, y2 - y1)
+        area_fraction = (box_width * box_height) / (frame_width * frame_height)
+        height_fraction = box_height / frame_height
+        bbox_band = _bbox_proximity_band(
+            area_fraction=area_fraction,
+            height_fraction=height_fraction,
+            config=config,
+        )
+        item["bbox_area_fraction"] = round(area_fraction, 4)
+        item["bbox_height_fraction"] = round(height_fraction, 4)
+        item["bbox_proximity_zone"] = bbox_band
+        item["proximity_zone"] = bbox_band
+        item["proximity_reason"] = "bbox_geometry_fast_path"
+        enriched.append(item)
+    return enriched
 
 
 class DepthAnythingEstimator:
@@ -99,6 +175,14 @@ class DepthAnythingEstimator:
         with accelerator_guard(device, torch):
             self.model = model.to(device)
         self.model.eval()
+
+    def warmup(self) -> None:
+        """Pay the one-time model/backend startup cost before live frames."""
+        try:
+            import numpy as np
+        except ImportError as exc:  # pragma: no cover - installed by extras
+            raise RuntimeError("Thiếu NumPy cho depth warmup") from exc
+        self.predict_bgr(np.zeros((384, 384, 3), dtype=np.uint8))
 
     def predict_bgr(self, image: Any) -> dict[str, object]:
         try:
@@ -176,6 +260,16 @@ def attach_depth_zones(
         y1, y2 = max(0, min(y1, height)), max(0, min(y2, height))
         box_width = x2 - x1
         box_height = y2 - y1
+        area_fraction = (box_width * box_height) / max(1, width * height)
+        height_fraction = box_height / max(1, height)
+        bbox_band = _bbox_proximity_band(
+            area_fraction=area_fraction,
+            height_fraction=height_fraction,
+            config=config,
+        )
+        item["bbox_area_fraction"] = round(area_fraction, 4)
+        item["bbox_height_fraction"] = round(height_fraction, 4)
+        item["bbox_proximity_zone"] = bbox_band
         core_x1 = x1 + int(round(box_width * config.horizontal_inset))
         core_x2 = x2 - int(round(box_width * config.horizontal_inset))
         core_y1 = y1 + int(round(box_height * config.top_inset))
@@ -206,11 +300,34 @@ def attach_depth_zones(
             item["relative_depth"] = round(value, 4)
             item["depth_iqr"] = round(iqr, 4)
             item["depth_confidence"] = round(confidence, 4)
+            relative_band = relative_depth_band(value, config)
+            item["relative_depth_band"] = relative_band
             if iqr >= config.max_iqr:
-                item["depth_zone"] = "unknown"
-                item["depth_reason"] = "ambiguous_bbox_depth"
+                if bool(item.get("obstacle_candidate")) and bbox_band in {
+                    "near",
+                    "far",
+                }:
+                    # Relative depth often mixes foreground/background inside a
+                    # detection box. For risk candidates, a clearly very large
+                    # or very small bbox is a useful fallback signal.
+                    item["depth_zone"] = bbox_band
+                    item["depth_reason"] = (
+                        "bbox_geometry_fallback_ambiguous_relative_depth"
+                    )
+                else:
+                    item["depth_zone"] = "unknown"
+                    item["depth_reason"] = "ambiguous_bbox_depth"
             else:
-                item["depth_zone"] = relative_depth_band(value, config)
-                item["depth_reason"] = "relative_bbox_core"
+                if bool(item.get("obstacle_candidate")) and bbox_band in {
+                    "near",
+                    "far",
+                }:
+                    item["depth_zone"] = bbox_band
+                    item["depth_reason"] = "bbox_geometry_with_relative_depth"
+                else:
+                    item["depth_zone"] = relative_band
+                    item["depth_reason"] = "relative_bbox_core"
+            item["proximity_zone"] = item["depth_zone"]
+            item["proximity_reason"] = item["depth_reason"]
         enriched.append(item)
     return enriched

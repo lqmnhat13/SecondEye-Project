@@ -14,7 +14,11 @@ from secondeye.multimodal.speech import (
 )
 from secondeye.accelerator import accelerator_guard
 from secondeye.system.audio import PriorityAudioManager
-from secondeye.system.demo import SemanticCommand, SemanticWorker
+from secondeye.system.demo import (
+    SemanticCommand,
+    SemanticWorker,
+    voice_intent_from_transcript,
+)
 from secondeye.system.orchestrator import AlertPriority
 from secondeye.system.overlay import UnicodeTextRenderer
 from secondeye.system.session import SessionLogger
@@ -55,6 +59,44 @@ def test_priority_audio_manager_serializes_and_repeats():
         assert backend.spoken[-1][0] == "Cảnh báo"
     finally:
         audio.close()
+
+
+def test_priority_audio_manager_survives_a_backend_failure():
+    class FailsOnceBackend(_AudioBackend):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def speak(self, text, *, interrupt=False):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("temporary TTS failure")
+            super().speak(text, interrupt=interrupt)
+
+    backend = FailsOnceBackend()
+    audio = PriorityAudioManager(backend)
+    try:
+        assert audio.submit("lỗi tạm thời")
+        _wait_until(lambda: audio.last_error is not None)
+        assert audio.submit("đã phục hồi")
+        _wait_until(lambda: len(backend.spoken) == 1)
+        assert backend.spoken[0][0] == "đã phục hồi"
+    finally:
+        audio.close()
+
+
+@pytest.mark.parametrize(
+    ("transcript", "intent"),
+    [
+        ("Hãy dừng lại", "stop"),
+        ("Người này đang sử dụng điện thoại", "vqa"),
+        ("Hải lọc chữ trong ảnh", "ocr"),
+        ("Hãy mô tà không cạnh", "scene"),
+        ("Lặp lại", "repeat"),
+    ],
+)
+def test_voice_command_intent_tolerates_common_whisper_errors(transcript, intent):
+    assert voice_intent_from_transcript(transcript) == intent
 
 
 def test_session_logger_writes_reproducible_jsonl(tmp_path):

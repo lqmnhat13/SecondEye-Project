@@ -383,6 +383,18 @@ def test_model_loader_falls_back_to_download_only_when_cache_is_missing():
     ]
 
 
+def test_model_loader_fails_fast_when_offline_cache_is_missing(monkeypatch):
+    class Factory:
+        @classmethod
+        def from_pretrained(cls, name, **kwargs):
+            raise OSError("not cached")
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    with pytest.raises(RuntimeError, match="Cache model chưa đầy đủ"):
+        _from_pretrained_offline_first(Factory, "model")
+
+
 def test_depth_loader_uses_local_cache_for_processor_and_model(monkeypatch):
     calls = []
 

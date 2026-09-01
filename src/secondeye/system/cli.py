@@ -232,7 +232,7 @@ def command_camera(args: argparse.Namespace) -> None:
         raise ValueError("display-fps và overlay-max-age phải dương")
     cv2, _, _ = require_detection_runtime()
     system = _build_system(args)
-    system.detector.warmup()
+    system.warmup()
     capture = LatestFrameCapture(
         cv2,
         args.camera,
@@ -240,6 +240,9 @@ def command_camera(args: argparse.Namespace) -> None:
         height=args.height,
         target_fps=args.camera_fps,
     ).start()
+    warmup_packet = capture.frames.wait_for_new(-1, timeout=2.0)
+    if warmup_packet is not None:
+        system.warmup_frame(warmup_packet.frame)
     runtime = AsyncVisionRuntime(
         system,
         capture.frames,
