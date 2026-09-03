@@ -64,11 +64,11 @@ def test_attach_depth_zones_abstains_for_mixed_depth_bbox():
     enriched = attach_depth_zones(detections, depth)
 
     assert enriched[0]["depth_zone"] == "unknown"
-    assert enriched[0]["depth_reason"] == "ambiguous_bbox_depth"
+    assert enriched[0]["depth_reason"] == "ambiguous_relative_depth"
     assert enriched[0]["depth_iqr"] > 0.35
 
 
-def test_large_obstacle_candidate_uses_bbox_fallback_when_depth_is_mixed():
+def test_large_bbox_cannot_override_ambiguous_relative_depth():
     depth = np.full((100, 100), 0.1, dtype=np.float32)
     depth[15:50, 20:80] = 0.9
     detections = [
@@ -83,13 +83,12 @@ def test_large_obstacle_candidate_uses_bbox_fallback_when_depth_is_mixed():
 
     assert enriched[0]["depth_iqr"] > 0.35
     assert enriched[0]["bbox_proximity_zone"] == "near"
-    assert enriched[0]["depth_zone"] == "near"
-    assert enriched[0]["depth_reason"] == (
-        "bbox_geometry_fallback_ambiguous_relative_depth"
-    )
+    assert enriched[0]["depth_zone"] == "unknown"
+    assert enriched[0]["depth_reason"] == "ambiguous_relative_depth"
+    assert enriched[0]["safety_evaluable"] is False
 
 
-def test_small_obstacle_candidate_is_far_even_if_relative_depth_is_high():
+def test_bbox_size_cannot_override_relative_depth_or_enable_safety():
     depth = np.full((100, 100), 0.9, dtype=np.float32)
     detections = [
         {
@@ -103,8 +102,9 @@ def test_small_obstacle_candidate_is_far_even_if_relative_depth_is_high():
 
     assert enriched[0]["relative_depth_band"] == "near"
     assert enriched[0]["bbox_proximity_zone"] == "far"
-    assert enriched[0]["depth_zone"] == "far"
-    assert enriched[0]["depth_reason"] == "bbox_geometry_with_relative_depth"
+    assert enriched[0]["depth_zone"] == "near"
+    assert enriched[0]["depth_reason"] == "relative_bbox_core_visual_only"
+    assert enriched[0]["safety_evaluable"] is False
 
 
 def test_fast_bbox_proximity_distinguishes_large_near_from_small_far():
@@ -121,6 +121,7 @@ def test_fast_bbox_proximity_distinguishes_large_near_from_small_far():
 
     assert enriched[0]["proximity_zone"] == "near"
     assert enriched[1]["proximity_zone"] == "far"
+    assert all(item["safety_evaluable"] is False for item in enriched)
 
 
 def test_relative_depth_thresholds_can_be_calibrated_on_validation_data():
@@ -180,12 +181,14 @@ def test_orchestrator_does_not_rearm_on_a_single_detection_miss():
         "depth_zone": "near",
     }
 
+    assert orchestrator.obstacle_alerts([detection]) == []
     assert len(orchestrator.obstacle_alerts([detection])) == 1
     assert orchestrator.obstacle_alerts([]) == []
+    assert orchestrator.state is SystemState.OBSTACLE
     assert orchestrator.obstacle_alerts([detection]) == []
 
 
-def test_orchestrator_warns_on_first_reliable_near_detection_by_default():
+def test_orchestrator_requires_two_reliable_observations_by_default():
     orchestrator = SystemOrchestrator()
     detection = {
         "label": "chair",
@@ -194,13 +197,15 @@ def test_orchestrator_warns_on_first_reliable_near_detection_by_default():
         "depth_zone": "near",
     }
 
+    first = orchestrator.obstacle_alerts([detection])
     alerts = orchestrator.obstacle_alerts([detection])
 
+    assert first == []
     assert len(alerts) == 1
     assert alerts[0].text == "Cẩn thận, ghế phía trước."
 
 
-def test_system_fast_path_warns_for_large_bbox_without_waiting_for_depth():
+def test_system_never_warns_from_bbox_without_metric_geometry():
     tts = _FakeTts()
     system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth(), tts=tts)
     detection = {
@@ -217,8 +222,8 @@ def test_system_fast_path_warns_for_large_bbox_without_waiting_for_depth():
 
     result = system.fuse_detection_and_depth(detection, None)
 
-    assert len(result["alerts"]) == 1
-    assert result["alert_evidence"] == "bbox_geometry_fast_path"
+    assert result["alerts"] == []
+    assert result["alert_evidence"] is None
     assert result["depth_used_for_alert"] is False
 
 
@@ -255,6 +260,45 @@ class _FakeDepth:
     def predict_bgr(self, image):
         return {
             "relative_inverse_depth": np.ones((6, 6), dtype=np.float32),
+            "latency_ms": 2.0,
+        }
+
+
+def _metric_test_depth():
+    height, width = 120, 160
+    fx = width / (2.0 * np.tan(np.deg2rad(60.0) / 2.0))
+    cy = (height - 1) / 2.0
+    yy, xx = np.indices((height, width))
+    depth = np.full((height, width), np.nan, dtype=np.float32)
+    floor = yy > cy + 2
+    depth[floor] = (1.2 * fx / (yy - cy))[floor]
+    depth[(yy >= 55) & (yy < 98) & (xx >= 64) & (xx < 96)] = 1.2
+    return depth
+
+
+class _FakeMetricDetector:
+    def predict_bgr(self, image):
+        return {
+            "detections": [
+                {
+                    "label": "chair",
+                    "confidence": 0.9,
+                    "bbox_xyxy": [62, 52, 98, 100],
+                    "direction": "center",
+                    "obstacle_candidate": True,
+                }
+            ],
+            "image_size": {"height": 120, "width": 160},
+            "latency_ms": 1.0,
+        }
+
+
+class _FakeMetricDepth:
+    def predict_bgr(self, image):
+        return {
+            "depth_type": "metric",
+            "metric_depth_m": _metric_test_depth(),
+            "usable": True,
             "latency_ms": 2.0,
         }
 
@@ -311,25 +355,31 @@ class _FakeUnverifiedTranslator:
 
 def test_second_eye_system_integrates_detection_depth_risk_and_tts():
     tts = _FakeTts()
-    system = SecondEyeSystem(detector=_FakeDetector(), depth=_FakeDepth(), tts=tts)
+    system = SecondEyeSystem(
+        detector=_FakeMetricDetector(),
+        depth=_FakeMetricDepth(),
+        tts=tts,
+        orchestrator=SystemOrchestrator(confirmation_frames=1),
+    )
 
-    result = system.process_frame(np.zeros((6, 6, 3), dtype=np.uint8))
+    result = system.process_frame(np.zeros((120, 160, 3), dtype=np.uint8))
 
     assert result["mode"] == "pretrained_integration"
     assert result["state"] == "OBSTACLE"
     assert result["detection"]["detections"][0]["depth_zone"] == "near"
     assert result["alerts"][0]["text"] == "Cẩn thận, ghế phía trước."
-    assert tts.messages == [("Cẩn thận, ghế phía trước.", True)]
+    assert tts.messages == [("Cẩn thận: ghế phía trước, cách 1.2 mét.", True)]
 
 
 def test_detection_only_frame_does_not_erase_depth_confirmation_streak():
     system = SecondEyeSystem(
-        detector=_FakeDetector(),
-        depth=_FakeDepth(),
+        detector=_FakeMetricDetector(),
+        depth=_FakeMetricDepth(),
         orchestrator=SystemOrchestrator(confirmation_frames=2),
     )
-    detection = _FakeDetector().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
-    depth = _FakeDepth().predict_bgr(np.zeros((6, 6, 3), dtype=np.uint8))
+    image = np.zeros((120, 160, 3), dtype=np.uint8)
+    detection = _FakeMetricDetector().predict_bgr(image)
+    depth = _FakeMetricDepth().predict_bgr(image)
 
     assert system.fuse_detection_and_depth(detection, depth)["alerts"] == []
     assert system.fuse_detection_and_depth(detection, None)["alerts"] == []
@@ -533,6 +583,39 @@ def test_async_runtime_never_reuses_depth_from_another_frame():
         runtime.stop()
 
 
+def test_async_runtime_accepts_synchronized_hardware_metric_depth():
+    frames = LatestFrameBuffer()
+    frames.publish(
+        np.zeros((120, 160, 3), dtype=np.uint8),
+        depth_result={
+            "depth_type": "metric",
+            "metric_depth_m": _metric_test_depth(),
+            "usable": True,
+        },
+    )
+    runtime = AsyncVisionRuntime(
+        SecondEyeSystem(
+            detector=_FakeMetricDetector(),
+            orchestrator=SystemOrchestrator(confirmation_frames=1),
+        ),
+        frames,
+        detection_fps=100.0,
+        depth_fps=100.0,
+    ).start()
+    try:
+        deadline = time.monotonic() + 1.0
+        result = None
+        while result is None and time.monotonic() < deadline:
+            result = runtime.latest()
+            time.sleep(0.005)
+        assert result is not None
+        assert result["depth_synchronized"] is True
+        assert result["depth"]["depth_type"] == "metric"
+        assert result["alert_evidence"] == "metric_floor_geometry"
+    finally:
+        runtime.stop()
+
+
 class _SequenceOcr:
     def __init__(self, transcripts):
         self.transcripts = iter(transcripts)
@@ -566,9 +649,7 @@ def test_multiframe_ocr_uses_agreement_to_ignore_one_unstable_transcript():
     tts = _FakeTts()
     system = SecondEyeSystem(
         detector=_FakeDetector(),
-        ocr=_SequenceOcr(
-            ["TẦNG 2 PHÒNG 205", "TẦNG 2 PHÒNG 205", "chuỗi nhiễu"]
-        ),
+        ocr=_SequenceOcr(["TẦNG 2 PHÒNG 205", "TẦNG 2 PHÒNG 205", "chuỗi nhiễu"]),
         tts=tts,
     )
 
@@ -678,7 +759,7 @@ def test_demo_cli_enables_all_pretrained_mvp_features():
     assert args.lazy_semantic is True
     assert args.priority_audio is True
     assert args.semantic_device == "cpu"
-    assert args.max_depth_age == 0.5
+    assert args.max_depth_age is None  # resolved from TOML when the system is built
     assert args.ocr_burst_frames == 5
     assert args.ocr_burst_window == 0.6
     assert args.ocr_max_candidates == 3

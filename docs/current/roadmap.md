@@ -1,9 +1,9 @@
 # Kế hoạch triển khai 10 tuần
 
 Kế hoạch dùng tuần tương đối vì chưa có ngày bảo vệ chính thức. Trạng thái trong
-tài liệu này được cập nhật theo hiện trạng MVP ngày 2026-08-30.
+tài liệu này được cập nhật theo hiện trạng MVP ngày 2026-09-03.
 
-Quyết định phạm vi cập nhật ngày 2026-08-30: toàn bộ kế hoạch chính dùng model
+Quyết định phạm vi cập nhật ngày 2026-09-03: toàn bộ kế hoạch chính dùng model
 pretrained. Fine-tuning/custom checkpoint không phải milestone, không phải cổng
 chất lượng và không phải điều kiện trả lời ba RQ. Dữ liệu vẫn cần cho đánh giá
 độc lập, nhưng không được hiểu là dataset bắt buộc để huấn luyện model.
@@ -30,8 +30,8 @@ chất lượng và không phải điều kiện trả lời ba RQ. Dữ liệu 
 | 3 | Tạo repo và môi trường Python | Hoàn thành; package, setup script và runtime local đã có |
 | 4 | Detection trên ảnh và webcam | Hoàn thành baseline; ảnh và live camera smoke đã có |
 | 5 | OCR trên ảnh development tiếng Việt | Adapter và smoke đã có; benchmark tập đánh giá còn thiếu |
-| 6 | Depth tại ba vùng khoảng cách | Adapter/fusion đã có; calibration và benchmark còn thiếu |
-| 7 | Tổng hợp baseline và biên bản chốt | MVP tích hợp đã có; báo cáo benchmark chính thức còn thiếu |
+| 6 | Depth metric, geometry và freshness | Đã có adapter model/sensor, floor/corridor, tracking/TTC; scenario benchmark còn thiếu |
+| 7 | Tổng hợp baseline và biên bản chốt | MVP 0.4.0 tích hợp đã có; báo cáo safety benchmark chính thức còn thiếu |
 
 ## Nếu chỉ còn 8 tuần
 

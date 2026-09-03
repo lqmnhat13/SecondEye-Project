@@ -13,7 +13,10 @@ from secondeye.accelerator import accelerator_guard
 from .config import DetectionPipelineConfig
 from .risk import assess_detection_only
 from .runtime import (
+    environment_manifest,
     ensure_class_schema,
+    file_sha256,
+    git_commit,
     require_detection_runtime,
     select_device,
     synchronize_device,
@@ -59,8 +62,31 @@ class PretrainedCocoDetector:
         self.config = config
         self.device = select_device(config.model.device, torch)
         self._torch = torch
-        self.model = yolo_class(config.model.base_weights, task="detect")
-        self.weights = config.model.base_weights
+        configured_weights = Path(config.model.base_weights).expanduser()
+        project_relative = config.source_path.parent.parent / configured_weights
+        model_source = (
+            str(configured_weights.resolve())
+            if configured_weights.is_absolute() and configured_weights.is_file()
+            else (
+                str(project_relative.resolve())
+                if project_relative.is_file()
+                else config.model.base_weights
+            )
+        )
+        self.model = yolo_class(model_source, task="detect")
+        resolved_weights = Path(
+            str(getattr(self.model, "ckpt_path", model_source))
+        ).expanduser()
+        self.weights_path = (
+            resolved_weights.resolve() if resolved_weights.is_file() else None
+        )
+        self.weights = (
+            str(self.weights_path) if self.weights_path is not None else model_source
+        )
+        self.model_sha256 = (
+            file_sha256(self.weights_path) if self.weights_path is not None else None
+        )
+        self.config_sha256 = file_sha256(config.source_path)
         self._mapping = dict(config.pretrained_coco.class_mapping)
         self._thresholds = dict(config.pretrained_coco.class_thresholds)
         self._canonical_ids = {
@@ -150,15 +176,29 @@ class PretrainedCocoDetector:
             "success": True,
             "pretrained": True,
             "model": self.weights,
+            "model_sha256": self.model_sha256,
+            "config_sha256": self.config_sha256,
             "device": self.device,
             "image_size": {"height": image_height, "width": image_width},
             "detections": [asdict(item) for item in detections],
             "latency_ms": round(latency_ms, 2),
             "limitations": [
                 "Đây là integration baseline COCO, không phải model fine-tuned.",
-                "Detection 2D chỉ tạo ứng viên; depth mới xác nhận vùng gần/trung bình/xa.",
-                "Schema này không hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng rác.",
+                "YOLO chỉ gắn nhãn; hình học metric độc lập mới xác nhận vật cản.",
+                "Vật thể ngoài COCO vẫn có thể xuất hiện dưới nhãn unknown_obstacle.",
             ],
+        }
+
+    def runtime_manifest(self) -> dict[str, object]:
+        return {
+            "detector": {
+                "weights": self.weights,
+                "sha256": self.model_sha256,
+                "config": str(self.config.source_path),
+                "config_sha256": self.config_sha256,
+            },
+            "environment": environment_manifest(self.device),
+            "git_commit": git_commit(),
         }
 
     def predict_bgr(self, image: Any) -> dict[str, object]:

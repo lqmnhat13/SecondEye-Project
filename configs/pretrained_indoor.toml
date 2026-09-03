@@ -107,3 +107,38 @@ candidate_classes = [
   "bottle",
   "potted_plant",
 ]
+
+[depth]
+model_name = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+model_revision = "8078d68a9c75a972131914f6afd0c1723be0da7f"
+emergency_distance_m = 0.80
+warning_distance_m = 1.80
+medium_distance_m = 3.00
+metric_percentile = 25.0
+# Relative depth remains available for scene descriptions but is never accepted
+# as safety evidence.
+allow_relative_alerts = false
+
+[geometry]
+horizontal_fov_degrees = 60.0
+min_depth_m = 0.15
+max_depth_m = 5.0
+floor_region_top_fraction = 0.52
+corridor_top_fraction = 0.35
+corridor_top_width_fraction = 0.24
+corridor_bottom_width_fraction = 0.78
+min_obstacle_height_m = 0.10
+max_obstacle_height_m = 2.50
+floor_ransac_threshold_m = 0.06
+floor_min_inlier_ratio = 0.30
+floor_min_points = 180
+min_component_pixels = 80
+
+[safety]
+confirmation_frames = 2
+rearm_absent_frames = 3
+cooldown_seconds = 4.0
+emergency_ttc_seconds = 1.5
+max_depth_age_seconds = 0.50
+max_result_age_seconds = 0.75
+max_evidence_gap_seconds = 1.0

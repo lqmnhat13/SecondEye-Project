@@ -1,10 +1,10 @@
 # Project Charter - SecondEye
 
-Phiên bản tài liệu: 0.3
+Phiên bản tài liệu: 0.4
 
-Cập nhật: 2026-08-30
+Cập nhật: 2026-09-03
 
-Đồng bộ với mã nguồn: 0.3.0 (`de67894`)
+Đồng bộ với mã nguồn: 0.4.0 (working tree ngày 2026-09-03)
 
 Trạng thái: phạm vi triển khai hiện tại dùng model pretrained, không fine-tune.
 
@@ -28,7 +28,7 @@ Người dùng mục tiêu là người mù và người có thị lực kém tr
 
 ## MVP và kiến trúc bắt buộc
 
-- Camera -> detection -> depth/risk -> cảnh báo.
+- Camera -> metric depth/sensor -> floor/corridor geometry -> tracking/TTC -> cảnh báo; YOLO chỉ bổ sung nhãn.
 - Ảnh -> OCR tiếng Việt -> TTS.
 - Ảnh + câu hỏi/yêu cầu -> mô tả hoặc VQA -> TTS.
 - Luồng an toàn tách khỏi luồng ngữ nghĩa theo yêu cầu.
@@ -39,8 +39,11 @@ Người dùng mục tiêu là người mù và người có thị lực kém tr
 
 - MVP dùng các model pretrained và adapter local; không huấn luyện lại detector,
   depth, OCR, VQA, STT hoặc model dịch.
-- Detection dùng schema tích hợp `indoor_coco_baseline_v1`; chỉ công bố các lớp
-  COCO có ánh xạ trực tiếp và không suy diễn cửa, cầu thang hoặc vật cản ngoài schema.
+- Detection ngữ nghĩa dùng schema `indoor_coco_baseline_v1`. Geometry metric giữ
+  vật cản ngoài schema dưới `unknown_obstacle`; Grounding DINO tùy chọn chỉ bổ
+  sung nhãn cho tác vụ mô tả.
+- Bbox và relative depth bị cấm làm bằng chứng cảnh báo. Alert cần metric depth
+  cùng frame, mặt sàn khả dụng, corridor 3D, freshness gate và track confirmation.
 - OCR trên macOS ưu tiên Apple Vision `vi-VN`, fallback PaddleOCR; mô tả cảnh và
   câu hỏi số lượng/đồ vật được grounded từ detection, BLIP chỉ xử lý một số mẫu
   thuộc tính được hỗ trợ.
@@ -55,7 +58,8 @@ Người dùng mục tiêu là người mù và người có thị lực kém tr
 ## Không thực hiện trong MVP
 
 - Ứng dụng Android hoàn chỉnh và fine-tune/tạo custom checkpoint.
-- Khoảng cách tuyệt đối chính xác theo mét với mọi camera.
+- Độ chính xác khoảng cách theo mét được chứng nhận cho mọi camera.
+- Cảnh báo hố hụt/cạnh cầu thang nếu chưa có sensor/protocol riêng.
 - Điều hướng giao thông/cầu thang không giám sát hoặc thay thế thiết bị hỗ trợ chính.
 - Chạy mọi mô-đun liên tục theo thời gian thực.
 
@@ -89,8 +93,10 @@ Ngưỡng định lượng là **dự kiến, cần GVHD phê duyệt trước k
 
 ## Rủi ro chính
 
-- Detection COCO không bao phủ ổ gà, cửa kính, bậc thềm và nhiều vật cản đặc thù.
-- Depth monocular chỉ cho gần/trung bình/xa nếu chưa hiệu chuẩn.
+- Geometry giảm phụ thuộc COCO nhưng có thể bỏ sót vật thấp/trong suốt/phản chiếu
+  hoặc khi không fit được sàn.
+- Monocular metric depth vẫn có scale error; sensor depth đã căn chỉnh và
+  intrinsics thật được ưu tiên.
 - VQA pretrained có thể hallucinate; model tải lần đầu qua mạng nhưng inference
   hiện tại chạy local sau khi cache đủ.
 - Ultralytics/weights áp dụng AGPL-3.0; cần quyết định giấy phép trước phát hành/deploy.

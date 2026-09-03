@@ -6,12 +6,18 @@ import re
 import time
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Callable
 
+from secondeye.detection.geometry import (
+    CameraIntrinsics,
+    GeometryObstacleConfig,
+    detect_geometry_obstacles,
+    fuse_geometry_with_detections,
+)
 from secondeye.multimodal.depth import (
     DepthFusionConfig,
-    attach_bbox_proximity_zones,
     attach_depth_zones,
+    attach_metric_depth_zones,
 )
 from secondeye.multimodal.ocr import OcrConsensusConfig
 from secondeye.multimodal.quality import assess_image_quality
@@ -22,7 +28,13 @@ from secondeye.multimodal.questions import (
 from secondeye.multimodal.speech import localize_vqa_answer
 
 from .localization import VI_DIRECTIONS, VI_LABELS
-from .orchestrator import AlertPriority, SystemOrchestrator, SystemState
+from .orchestrator import (
+    AlertPriority,
+    SystemOrchestrator,
+    SystemState,
+    compose_obstacle_announcement,
+)
+from .tracking import DetectionTracker
 
 _UNSAFE_VQA_TERMS = (
     "dẫn đường",
@@ -58,11 +70,26 @@ def _semantic_detections(
     for raw_item in detection_result.get("detections", []):
         item = dict(raw_item)
         confidence = item.get("confidence")
-        if confidence is not None and float(confidence) < _SEMANTIC_DETECTION_CONFIDENCE:
+        if (
+            confidence is not None
+            and float(confidence) < _SEMANTIC_DETECTION_CONFIDENCE
+        ):
             discarded += 1
             continue
         accepted.append(item)
     return accepted, discarded
+
+
+def _bbox_iou(first: Any, second: Any) -> float:
+    a = [float(value) for value in first]
+    b = [float(value) for value in second]
+    intersection = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(
+        0.0, min(a[3], b[3]) - max(a[1], b[1])
+    )
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0.0 else 0.0
 
 
 def _scene_summary(
@@ -99,9 +126,7 @@ def _scene_summary(
             confidence = float(item["confidence"])
             previous = group["max_confidence"]
             group["max_confidence"] = (
-                confidence
-                if previous is None
-                else max(float(previous), confidence)
+                confidence if previous is None else max(float(previous), confidence)
             )
     if not groups:
         return (
@@ -111,7 +136,7 @@ def _scene_summary(
             discarded,
         )
 
-    depth_rank = {"near": 0, "medium": 1, "far": 2, None: 3}
+    depth_rank = {"emergency": 0, "near": 1, "medium": 2, "far": 3, None: 4}
     direction_rank = {"center": 0, "left": 1, "right": 1}
     ordered = sorted(
         groups.values(),
@@ -129,7 +154,7 @@ def _scene_summary(
         prefix = f"{count} " if count > 1 else ""
         direction = VI_DIRECTIONS.get(str(group["direction"]), "trong ảnh")
         depth = group["depth_zone"]
-        if depth == "near":
+        if depth in {"near", "emergency"}:
             location = f"ở gần {direction}"
         elif depth == "medium":
             location = f"ở khoảng cách trung bình {direction}"
@@ -151,20 +176,30 @@ class SecondEyeSystem:
         depth: Any | None = None,
         ocr: Any | None = None,
         vqa: Any | None = None,
+        semantic_detector: Any | None = None,
         translator: Any | None = None,
         tts: Any | None = None,
         orchestrator: SystemOrchestrator | None = None,
         depth_fusion_config: DepthFusionConfig | None = None,
+        geometry_config: GeometryObstacleConfig | None = None,
+        tracker: DetectionTracker | None = None,
+        emergency_ttc_seconds: float = 1.5,
         ocr_consensus_config: OcrConsensusConfig | None = None,
     ) -> None:
         self.detector = detector
         self.depth = depth
         self.ocr = ocr
         self.vqa = vqa
+        self.semantic_detector = semantic_detector
         self.translator = translator
         self.tts = tts
         self.orchestrator = orchestrator or SystemOrchestrator()
         self.depth_fusion_config = depth_fusion_config or DepthFusionConfig()
+        self.geometry_config = geometry_config or GeometryObstacleConfig()
+        self.tracker = tracker or DetectionTracker()
+        if emergency_ttc_seconds <= 0.0:
+            raise ValueError("emergency_ttc_seconds phải dương")
+        self.emergency_ttc_seconds = emergency_ttc_seconds
         self.ocr_consensus_config = ocr_consensus_config or OcrConsensusConfig()
 
     def warmup(self) -> None:
@@ -174,6 +209,43 @@ class SecondEyeSystem:
             depth_warmup = getattr(self.depth, "warmup", None)
             if callable(depth_warmup):
                 depth_warmup()
+
+    def runtime_manifest(self) -> dict[str, object]:
+        detector_manifest = getattr(self.detector, "runtime_manifest", None)
+        return {
+            "detector": (
+                detector_manifest()
+                if callable(detector_manifest)
+                else {"type": type(self.detector).__name__}
+            ),
+            "depth": (
+                None
+                if self.depth is None
+                else {
+                    "type": type(self.depth).__name__,
+                    "model": getattr(self.depth, "model_name", None),
+                    "model_revision": getattr(self.depth, "model_revision", None),
+                    "depth_type": getattr(self.depth, "depth_type", None),
+                    "device": getattr(self.depth, "device", None),
+                }
+            ),
+            "semantic_detector": (
+                None
+                if self.semantic_detector is None
+                else {"type": type(self.semantic_detector).__name__}
+            ),
+            "safety": {
+                "confirmation_frames": self.orchestrator.confirmation_frames,
+                "rearm_absent_frames": self.orchestrator.rearm_absent_frames,
+                "cooldown_seconds": self.orchestrator.cooldown_seconds,
+                "max_evidence_gap_seconds": (
+                    self.orchestrator.max_evidence_gap_seconds
+                ),
+                "emergency_ttc_seconds": self.emergency_ttc_seconds,
+                "relative_depth_alerts": False,
+                "bbox_only_alerts": False,
+            },
+        }
 
     def warmup_frame(self, image: Any) -> None:
         """Warm shape-specific backend kernels with an actual camera frame."""
@@ -193,8 +265,41 @@ class SecondEyeSystem:
     def announce(self, text: str, priority: AlertPriority = AlertPriority.INFO) -> None:
         self._speak(text, priority)
 
+    def _grounded_semantics(
+        self,
+        image: Any,
+        detection_result: dict[str, object] | None,
+    ) -> dict[str, object]:
+        base = detection_result or self.detector.predict_bgr(image)
+        if self.semantic_detector is None:
+            return base
+        expanded = self.semantic_detector.predict_bgr(image)
+        merged = [dict(item) for item in base.get("detections", [])]
+        for raw_item in expanded.get("detections", []):
+            item = dict(raw_item)
+            duplicate = any(
+                str(existing.get("label")) == str(item.get("label"))
+                and _bbox_iou(existing["bbox_xyxy"], item["bbox_xyxy"]) >= 0.5
+                for existing in merged
+            )
+            if not duplicate:
+                merged.append(item)
+        return {
+            **base,
+            "detections": merged,
+            "semantic_expansion": {
+                "model": expanded.get("model"),
+                "added_count": len(merged) - len(base.get("detections", [])),
+                "latency_ms": expanded.get("latency_ms"),
+            },
+        }
+
     def process_frame(
-        self, image: Any, *, with_depth: bool = True
+        self,
+        image: Any,
+        *,
+        with_depth: bool = True,
+        captured_at: float | None = None,
     ) -> dict[str, object]:
         started = time.perf_counter()
         detection = self.detector.predict_bgr(image)
@@ -206,6 +311,7 @@ class SecondEyeSystem:
             depth_result,
             started_at=started,
             depth_age_ms=0.0 if depth_result is not None else None,
+            captured_at=captured_at,
         )
 
     def fuse_detection_and_depth(
@@ -215,6 +321,9 @@ class SecondEyeSystem:
         *,
         started_at: float | None = None,
         depth_age_ms: float | None = None,
+        captured_at: float | None = None,
+        safety_enabled: bool = True,
+        safety_age_check: Callable[[], bool] | None = None,
     ) -> dict[str, object]:
         """Fuse independently scheduled detection/depth results safely."""
         started = time.perf_counter() if started_at is None else started_at
@@ -222,53 +331,83 @@ class SecondEyeSystem:
         depth_usable = depth_result is not None and bool(
             depth_result.get("usable", True)
         )
-        proximity_evaluable = depth_usable
-        if depth_usable:
+        depth_type = None if depth_result is None else depth_result.get("depth_type")
+        geometry: dict[str, object] | None = None
+        metric_evaluable = bool(
+            depth_usable
+            and depth_result is not None
+            and (depth_type == "metric" or "metric_depth_m" in depth_result)
+        )
+        if metric_evaluable and depth_result is not None:
+            metric_depth = depth_result["metric_depth_m"]
+            detections = attach_metric_depth_zones(
+                detections,
+                metric_depth,
+                config=self.depth_fusion_config,
+            )
+            raw_intrinsics = depth_result.get("intrinsics")
+            intrinsics = (
+                CameraIntrinsics.from_mapping(raw_intrinsics)
+                if isinstance(raw_intrinsics, dict)
+                else None
+            )
+            geometry_obstacles, geometry = detect_geometry_obstacles(
+                metric_depth,
+                intrinsics=intrinsics,
+                config=self.geometry_config,
+                depth_config=self.depth_fusion_config,
+            )
+            detections = fuse_geometry_with_detections(detections, geometry_obstacles)
+            metric_evaluable = bool(geometry.get("usable"))
+        elif (
+            depth_usable
+            and depth_result is not None
+            and "relative_inverse_depth" in depth_result
+        ):
             detections = attach_depth_zones(
                 detections,
                 depth_result["relative_inverse_depth"],
                 config=self.depth_fusion_config,
             )
-        else:
-            image_size = detection.get("image_size")
-            if isinstance(image_size, dict):
-                width = int(image_size.get("width", 0))
-                height = int(image_size.get("height", 0))
-                if width > 0 and height > 0:
-                    detections = attach_bbox_proximity_zones(
-                        detections,
-                        frame_width=width,
-                        frame_height=height,
-                        config=self.depth_fusion_config,
-                    )
-                    proximity_evaluable = True
-        alerts = (
-            self.orchestrator.obstacle_alerts(detections)
-            if proximity_evaluable
-            else []
+        tracked_at = time.monotonic() if captured_at is None else captured_at
+        detections = self.tracker.update(detections, timestamp=tracked_at)
+        for item in detections:
+            ttc = item.get("time_to_collision_s")
+            if (
+                item.get("safety_evaluable")
+                and ttc is not None
+                and float(ttc) <= self.emergency_ttc_seconds
+            ):
+                item["risk_level"] = "emergency"
+                item["proximity_zone"] = "emergency"
+                item["proximity_reason"] = "metric_geometry_low_ttc"
+        within_age_limit = (
+            True if safety_age_check is None else bool(safety_age_check())
         )
-        if not alerts and self.orchestrator.state is SystemState.OBSTACLE:
-            # Detection-only frames must not erase confirmation accumulated by
-            # synchronized depth frames, but they also must not retain an
-            # active obstacle UI state without current depth evidence.
-            self.orchestrator.transition(SystemState.IDLE)
+        risk_evidence_current = bool(
+            safety_enabled and within_age_limit and metric_evaluable
+        )
+        alerts = []
+        if risk_evidence_current:
+            alertable = [item for item in detections if item.get("safety_evaluable")]
+            alerts = self.orchestrator.obstacle_alerts(alertable)
+        else:
+            self.orchestrator.evidence_unavailable()
         if self.tts is not None and alerts:
-            self._speak(alerts[0].text, AlertPriority.OBSTACLE)
+            self._speak(compose_obstacle_announcement(alerts), AlertPriority.OBSTACLE)
         return {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "system": "SecondEye",
             "mode": "pretrained_integration",
             "state": self.orchestrator.state.value,
             "detection": {**detection, "detections": detections},
             "depth": self._serializable_depth(depth_result),
-            "depth_used_for_alert": depth_usable,
+            "depth_used_for_alert": bool(alerts and metric_evaluable),
             "alert_evidence": (
-                "relative_depth_and_bbox"
-                if alerts and depth_usable
-                else "bbox_geometry_fast_path"
-                if alerts
-                else None
+                "metric_floor_geometry" if alerts and metric_evaluable else None
             ),
+            "risk_evidence_current": risk_evidence_current,
+            "geometry": geometry,
             "depth_age_ms": None if depth_age_ms is None else round(depth_age_ms, 2),
             "alerts": [
                 {
@@ -276,13 +415,18 @@ class SecondEyeSystem:
                     "text": alert.text,
                     "priority": int(alert.priority),
                     "state": alert.state.value,
+                    "track_id": alert.track_id,
+                    "label": alert.label,
+                    "direction": alert.direction,
+                    "distance_m": alert.distance_m,
                 }
                 for alert in alerts
             ],
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
             "limitations": [
                 "Pretrained integration baseline, không phải hệ thống điều hướng đã kiểm định.",
-                "Không hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng rác.",
+                "Depth tương đối và bbox không được dùng làm bằng chứng cảnh báo.",
+                "Mặt sàn không ước lượng được thì hệ thống chủ động từ chối cảnh báo.",
             ],
         }
 
@@ -295,7 +439,7 @@ class SecondEyeSystem:
         return {
             key: value
             for key, value in result.items()
-            if key != "relative_inverse_depth"
+            if key not in {"relative_inverse_depth", "metric_depth_m"}
         }
 
     @staticmethod
@@ -318,16 +462,18 @@ class SecondEyeSystem:
             **result,
             "abstained": not text
             or (mean_confidence is not None and mean_confidence < 0.35),
-            "mean_confidence": None
-            if mean_confidence is None
-            else round(mean_confidence, 4),
+            "mean_confidence": (
+                None if mean_confidence is None else round(mean_confidence, 4)
+            ),
             "quality": quality.as_dict(),
         }
 
     def read_text(self, image: Any) -> dict[str, object]:
         return self.read_text_frames([image])
 
-    def read_text_frames(self, images: list[Any] | tuple[Any, ...]) -> dict[str, object]:
+    def read_text_frames(
+        self, images: list[Any] | tuple[Any, ...]
+    ) -> dict[str, object]:
         """Read a short burst and speak only a temporally stable transcript."""
         if self.ocr is None:
             raise RuntimeError("OCR chưa được bật")
@@ -392,9 +538,7 @@ class SecondEyeSystem:
         nonempty = [
             (index, result)
             for index, result in candidates
-            if self._normalize_ocr_consensus_text(
-                str(result.get("transcript", ""))
-            )
+            if self._normalize_ocr_consensus_text(str(result.get("transcript", "")))
         ]
         consensus_score = 1.0
         if len(ranked) > 1 and len(nonempty) < 2:
@@ -438,9 +582,7 @@ class SecondEyeSystem:
         text = str(selected.get("transcript", "")).strip()
         abstained = bool(selected.get("abstained", False))
         abstention_reason = (
-            "no_text"
-            if not text
-            else ("low_mean_confidence" if abstained else None)
+            "no_text" if not text else ("low_mean_confidence" if abstained else None)
         )
         if (
             len(ranked) > 1
@@ -559,7 +701,7 @@ class SecondEyeSystem:
             return result
 
         if normalized.intent in {"grounded_count", "grounded_scene"}:
-            grounded = detection_result or self.detector.predict_bgr(image)
+            grounded = self._grounded_semantics(image, detection_result)
             if normalized.intent == "grounded_count":
                 detections, discarded = _semantic_detections(grounded)
                 count = (
@@ -596,8 +738,7 @@ class SecondEyeSystem:
             else:
                 plain_question = plain_vietnamese(question)
                 front_only = "front" in question.casefold() or any(
-                    marker in plain_question
-                    for marker in ("phia truoc", "truoc mat")
+                    marker in plain_question for marker in ("phia truoc", "truoc mat")
                 )
                 answer, abstained, object_groups, discarded = _scene_summary(
                     grounded,
@@ -675,10 +816,11 @@ class SecondEyeSystem:
         detection_result: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Create a short Vietnamese description grounded in detector output."""
-        if detection_result is None:
-            if image is None:
-                raise ValueError("describe_scene cần image hoặc detection_result")
-            detection_result = self.detector.predict_bgr(image)
+        if image is None and detection_result is None:
+            raise ValueError("describe_scene cần image hoặc detection_result")
+        if image is not None:
+            detection_result = self._grounded_semantics(image, detection_result)
+        assert detection_result is not None
         text, abstained, groups, discarded = _scene_summary(detection_result)
         self.orchestrator.transition(SystemState.SCENE)
         self._speak(text, AlertPriority.SEMANTIC)
@@ -688,12 +830,16 @@ class SecondEyeSystem:
             "success": True,
             "description": text,
             "abstained": abstained,
-            "source": "pretrained_detection",
+            "source": (
+                "pretrained_detection_plus_open_vocabulary"
+                if detection_result.get("semantic_expansion") is not None
+                else "pretrained_detection"
+            ),
             "object_groups": groups,
             "discarded_low_confidence": discarded,
             "limitations": [
                 "Chỉ mô tả detection có confidence từ 0.45 và các lớp được cấu hình.",
-                "Khoảng cách gần/trung bình/xa là tương đối, không phải mét.",
+                "Open-vocabulary (nếu bật) chỉ bổ sung ngữ nghĩa, không xác nhận an toàn.",
             ],
         }
 

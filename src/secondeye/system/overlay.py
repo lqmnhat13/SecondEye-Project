@@ -94,7 +94,16 @@ def draw_detection_overlays(
     overlays: list[TextOverlay] = []
     for detection in detections:
         x1, y1, x2, y2 = (int(value) for value in detection["bbox_xyxy"])
-        color = (0, 0, 255) if detection.get("depth_zone") == "near" else (0, 200, 0)
+        safety_evaluable = bool(detection.get("safety_evaluable"))
+        zone = detection.get("depth_zone")
+        if safety_evaluable and zone == "emergency":
+            color = (255, 0, 255)
+        elif safety_evaluable and zone == "near":
+            color = (0, 0, 255)
+        elif detection.get("distance_m") is not None:
+            color = (0, 200, 255)
+        else:
+            color = (0, 200, 0)
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         caption = (
             f"{localize_label(str(detection['label']))} "
@@ -102,5 +111,9 @@ def draw_detection_overlays(
         )
         if detection.get("depth_zone"):
             caption += " " + localize_depth_zone(str(detection["depth_zone"]))
+        if detection.get("distance_m") is not None:
+            caption += f" {float(detection['distance_m']):.1f}m"
+        if detection.get("track_id") is not None:
+            caption += f" #{int(detection['track_id'])}"
         overlays.append((caption, (x1, max(2, y1 - 24)), color, 18))
     return overlays

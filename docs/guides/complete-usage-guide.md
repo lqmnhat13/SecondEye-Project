@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng đầy đủ SecondEye MVP
 
-Cập nhật: 2026-08-30. Phiên bản mã nguồn: `0.3.0`.
+Cập nhật: 2026-09-03. Phiên bản mã nguồn: `0.4.0`.
 
 Tài liệu này dành cho người lần đầu sử dụng hoặc bảo trì SecondEye. Nội dung mô
 tả đúng pipeline pretrained hiện tại, từ cài đặt đến vận hành, đọc kết quả, xử
@@ -40,8 +40,9 @@ bước fine-tuning bắt buộc.
 | Chức năng | Thành phần | Cách sử dụng |
 |---|---|---|
 | Nhận diện vật thể | YOLO26m pretrained COCO | Tự chạy trong `image`, `camera` và `demo` |
-| Ước lượng độ sâu tương đối | Depth Anything V2 Small | Bật bằng `--depth`; `demo` bật sẵn |
-| Cảnh báo vật cản gần | Detection + depth + risk fusion | Chỉ phát khi đủ điều kiện xác nhận |
+| Ước lượng độ sâu metric | Depth Anything V2 Metric Indoor Small hoặc sensor | Bật bằng `--depth`; `demo` bật sẵn |
+| Cảnh báo vật cản | Mặt sàn + corridor 3D + tracking/TTC | Không phụ thuộc danh sách nhãn YOLO |
+| Nhãn mở rộng tùy chọn | Grounding DINO Tiny | `--open-vocabulary`, chỉ cho mô tả/hỏi đáp |
 | Đọc chữ trong ảnh | Apple Vision `vi-VN`; PaddleOCR `vi` fallback | `image --ocr` hoặc phím `o` trong demo |
 | Mô tả cảnh | Tổng hợp từ detection | Phím `s` trong demo |
 | Hỏi đáp ảnh | Detection-grounded query + BLIP VQA | `image --question` hoặc phím `v` |
@@ -58,9 +59,10 @@ backpack, handbag, suitcase, bottle, potted_plant,
 tv, laptop, toilet, sink, refrigerator
 ```
 
-Hệ thống không tuyên bố nhận diện cửa, cầu thang, cột, tủ, hộp hoặc thùng rác.
-Một vật nằm ngoài 15 lớp trên có thể được YOLO gốc nhận ra nhưng adapter sẽ loại
-bỏ khỏi kết quả SecondEye.
+YOLO chỉ cung cấp tên vật. Vật ngoài 15 lớp vẫn có thể được nhánh geometry giữ
+dưới tên `unknown_obstacle`; `--open-vocabulary` bổ sung nhãn cửa, cầu thang,
+cột, tủ, hộp và thùng rác cho tác vụ mô tả. Nhãn mở rộng không tự kích hoạt cảnh
+báo nếu thiếu bằng chứng metric 3D.
 
 ## 2. Kiến trúc và luồng xử lý
 
@@ -72,9 +74,11 @@ Camera Mac/iPhone
     -> latest-frame buffer (chỉ giữ frame mới nhất)
     -> vision worker
        -> YOLO26m detection
-       -> Depth Anything (nếu bật và đến chu kỳ depth)
-       -> gắn near/medium/far vào bbox
-       -> risk fusion + cảnh báo theo lần xuất hiện + cooldown
+       -> metric depth (model hoặc sensor, cùng frame RGB)
+       -> point cloud + mặt sàn RANSAC + corridor 3D
+       -> cụm vật cản class-agnostic + semantic fusion
+       -> track ID + vận tốc tiếp cận/TTC
+       -> confirmation + cooldown + rearm
     -> overlay cửa sổ OpenCV
     -> audio priority queue
     -> macOS TTS
@@ -82,9 +86,10 @@ Camera Mac/iPhone
 
 Capture, inference và UI không chạy trong cùng một vòng chặn. Nếu model xử lý
 chậm hơn camera, frame cũ bị thay bằng frame mới thay vì tạo hàng đợi dài. Một
-kết quả quá cũ hơn `--overlay-max-age` không được vẽ. Chỉ depth sinh từ đúng
-`frame_id` đang detection và không quá `--max-depth-age` mới được xác nhận vật
-cản gần. Depth của frame trước không được tái sử dụng trên bbox của frame mới.
+kết quả có **thời điểm chụp** quá cũ hơn `--overlay-max-age` không được vẽ. Chỉ
+depth sinh từ đúng `frame_id` và toàn bộ kết quả không quá `--max-result-age`
+mới được đánh giá cảnh báo. Depth của frame trước không được tái sử dụng trên
+bbox của frame mới.
 
 ### 2.2 Luồng tác vụ theo yêu cầu
 
@@ -114,18 +119,15 @@ bận, yêu cầu mới được từ chối thay vì làm nghẽn vision worker
 
 ### 2.3 Điều kiện phát cảnh báo vật cản
 
-Một detection chỉ trở thành cảnh báo khi đồng thời thỏa mãn:
+Một vùng chỉ trở thành cảnh báo khi geometry metric tìm thấy cụm điểm nhô khỏi
+mặt sàn trong corridor và kết quả còn mới. `near` cần cùng `track_id` xuất hiện
+trong 2 lần quan sát metric; `emergency` (≤ 0,8 m hoặc TTC ≤ 1,5 s) có thể phát
+ngay. Khóa cooldown dùng `track_id`, không dùng `label + direction`.
 
-1. Confidence đạt threshold riêng của lớp.
-2. Lớp nằm trong `risk.candidate_classes`.
-3. Tâm bbox nằm trong 40% vùng giữa ảnh.
-4. Depth còn đủ mới và gắn band `near`.
-5. Cùng khóa `label + direction` xuất hiện trong 2 frame xác nhận.
-6. Cảnh báo đó chưa phát trong lần xuất hiện hiện tại và không nằm trong cooldown 4 giây.
-
-Nếu depth tắt hoặc quá cũ, detection vẫn hiển thị nhưng không được phát thành
-câu “ở gần”. `near/medium/far` là độ sâu tương đối trong từng frame, không phải
-khoảng cách theo mét.
+Nếu depth tắt, là relative-only, quá cũ hoặc không fit được mặt sàn, detection
+vẫn có thể hiển thị nhưng `risk_evidence_current=false` và không phát cảnh báo.
+Bbox lớn/nhỏ không phải bằng chứng an toàn. Cooldown chỉ ngăn lặp TTS; trạng
+thái vẫn là `OBSTACLE` khi vật cản còn tồn tại.
 
 ### 2.4 Thứ tự ưu tiên âm thanh
 
@@ -161,12 +163,15 @@ SecondEye-Project/
 │   │   └── protocol.py               audit manifest CSV nghiên cứu
 │   ├── detection/
 │   │   ├── config.py                 đọc và kiểm tra TOML
+│   │   ├── geometry.py               mặt sàn/corridor/vật cản class-agnostic
 │   │   ├── model.py                  YOLO adapter và output schema
 │   │   ├── risk.py                   vùng trái/giữa/phải và obstacle candidate
 │   │   ├── pipeline.py               CLI detection/custom checkpoint cũ
 │   │   └── dataset.py                prepare/validate dataset
 │   ├── multimodal/
-│   │   ├── depth.py                  relative depth và depth band
+│   │   ├── depth.py                  metric/relative depth và depth band
+│   │   ├── depth_provider.py         contract depth sensor đã căn chỉnh
+│   │   ├── open_vocabulary.py        Grounding DINO tùy chọn
 │   │   ├── ocr.py                    Apple Vision + PaddleOCR fallback
 │   │   ├── apple_vision_ocr.m         helper OCR native macOS
 │   │   ├── questions.py              định tuyến câu hỏi Việt/Anh
@@ -174,15 +179,18 @@ SecondEye-Project/
 │   │   ├── speech.py                 microphone, Whisper và macOS TTS
 │   │   ├── translation.py            dịch VQA fail-safe
 │   │   └── vqa.py                    BLIP VQA adapter
-│   └── system/
+│   ├── system/
 │       ├── cli.py                    CLI `secondeye`
 │       ├── camera.py                 capture và async vision runtime
 │       ├── demo.py                   UI demo, phím và semantic worker
+│       ├── tracking.py               track ID, approach speed và TTC
 │       ├── pipeline.py               ghép detection/depth/OCR/VQA/TTS
-│       ├── orchestrator.py           state, priority, confirmation, cooldown
+│       ├── orchestrator.py           state, confirmation, cooldown, rearm
 │       ├── audio.py                  hàng đợi TTS ưu tiên
 │       ├── overlay.py                vẽ bbox và chữ Unicode
 │       └── session.py                ghi JSONL
+│   └── evaluation/
+│       └── safety.py                 metric safety theo sự kiện
 ├── tests/unit/                        unit/integration regression tests
 ├── docs/                              tài liệu public
 ├── data/                              dữ liệu local, bị Git bỏ qua
@@ -405,7 +413,10 @@ session log.
   --detection-fps 12 \
   --depth-fps 3 \
   --max-depth-age 0.5 \
+  --max-result-age 0.75 \
+  --confirmation-frames 2 \
   --overlay-max-age 1.5 \
+  --open-vocabulary \
   --question "What objects are directly in front of me?" \
   --microphone auto \
   --listen-seconds 4 \
@@ -417,7 +428,8 @@ session log.
 | Tham số | Mặc định | Ý nghĩa |
 |---|---:|---|
 | `--camera` | `0` | Index camera OpenCV |
-| `--depth` / `--no-depth` | bật | Bật/tắt Depth Anything |
+| `--depth` / `--no-depth` | bật | Bật/tắt metric Depth Anything |
+| `--depth-model` | config | Checkpoint metric/relative; relative chỉ dùng mô tả |
 | `--width` | `1280` | Chiều rộng camera yêu cầu |
 | `--height` | `720` | Chiều cao camera yêu cầu |
 | `--camera-fps` | `30` | FPS yêu cầu từ camera |
@@ -425,10 +437,18 @@ session log.
 | `--detection-fps` | `12` | Giới hạn tần suất detection; không bảo đảm máy đạt đúng 12 Hz |
 | `--depth-fps` | `3` | Tần suất mục tiêu của depth |
 | `--max-depth-age` | `0.50` giây | Depth cùng frame nhưng cũ hơn giá trị này không được fusion |
-| `--overlay-max-age` | `1.50` giây | Kết quả cũ hơn giá trị này không được vẽ |
-| `--depth-medium-threshold` | `0.3333` | Ngưỡng tương đối bắt đầu band `medium`; phải hiệu chuẩn trên validation set |
-| `--depth-near-threshold` | `0.6667` | Ngưỡng tương đối bắt đầu band `near`; không phải mét |
-| `--depth-max-iqr` | `0.35` | Độ phân tán tối đa trong lõi bbox; vượt ngưỡng trả `unknown` |
+| `--max-result-age` | `0.75` giây | Tuổi tối đa từ lúc chụp đến lúc đánh giá cảnh báo |
+| `--overlay-max-age` | `1.50` giây | Tuổi từ lúc chụp; quá hạn thì không vẽ |
+| `--emergency-distance` | `0.80` m | Ngưỡng cảnh báo khẩn cấp |
+| `--warning-distance` | `1.80` m | Ngưỡng `near` |
+| `--medium-distance` | `3.00` m | Giới hạn vùng geometry quan tâm |
+| `--confirmation-frames` | `2` | Số quan sát metric liên tiếp cho cảnh báo near |
+| `--rearm-absent-frames` | `3` | Số lần vắng mặt trước khi cho phép cảnh báo lại |
+| `--alert-cooldown` | `4.0` giây | Chặn lặp âm thanh cho cùng track |
+| `--depth-medium-threshold` | `0.3333` | Chỉ dùng khi checkpoint relative, không dùng cho safety |
+| `--depth-near-threshold` | `0.6667` | Chỉ dùng hiển thị relative, không phải mét |
+| `--depth-max-iqr` | `0.35` | Độ phân tán relative tối đa trước khi trả `unknown` |
+| `--open-vocabulary` | tắt | Lazy-load Grounding DINO cho mô tả/hỏi đáp |
 | `--ocr-burst-frames` | `5` | Số frame gần nhất lấy từ lịch sử camera khi OCR |
 | `--ocr-burst-window` | `0.60` giây | Cửa sổ thời gian của burst OCR |
 | `--ocr-max-candidates` | `3` | Số frame chất lượng tốt nhất thực sự chạy OCR |
@@ -549,6 +569,8 @@ secondeye camera \
   --camera-fps 30 --display-fps 30 \
   --detection-fps 12 --depth-fps 3 \
   --max-depth-age 0.5 \
+  --max-result-age 0.75 \
+  --confirmation-frames 2 \
   --overlay-max-age 0.75 \
   --voice Linh --speech-rate 165
 ```
@@ -588,13 +610,19 @@ secondeye image \
   --no-tts
 ```
 
-Mỗi bbox có thể nhận thêm `relative_depth`, `relative_depth_band`, `depth_zone`,
-`depth_confidence`, `depth_iqr`, `depth_reason`, `depth_sample_xyxy`,
-`bbox_area_fraction`, `bbox_height_fraction` và `bbox_proximity_zone`. Không diễn
-giải các giá trị này thành mét. Với ứng viên vật cản, bbox rất lớn/nhỏ là tín hiệu
-fallback khi relative depth bị trộn foreground/background; vùng kích thước trung
-bình vẫn trả `unknown` nếu depth mơ hồ. `depth_confidence = 1 - IQR` chỉ là độ
-nhất quán không gian heuristic, không phải xác suất đúng đã calibration.
+Mỗi bbox có thể nhận `distance_m`, `depth_zone`, `depth_confidence`,
+`depth_sample_xyxy`, `track_id`, `approach_speed_mps` và
+`time_to_collision_s`. Chỉ vùng có `geometry_confirmed=true` và
+`safety_evaluable=true` mới được xét cảnh báo. Vùng không khớp nhãn được trả dưới
+`unknown_obstacle`. Nếu dùng checkpoint relative, payload vẫn có
+`relative_depth`, nhưng luôn mang `safety_evaluable=false`.
+
+Mở rộng tên vật cho mô tả (không thay đổi safety):
+
+```bash
+secondeye image --source /duong/dan/anh.jpg \
+  --question "Có gì phía trước?" --open-vocabulary --no-tts
+```
 
 ### 9.3 OCR
 
@@ -797,26 +825,26 @@ candidate_classes = [
 `tv`, `laptop`, `toilet`, `sink`, `refrigerator` vẫn có thể hiển thị nhưng không
 nằm trong candidate set mặc định.
 
-### 11.4 Depth band
+### 11.4 `[depth]`, `[geometry]` và `[safety]`
 
-Depth map được chuẩn hóa theo percentile 2–98% của chính frame đó. Depth map
-phẳng hoặc không hữu hạn bị đánh dấu `usable=false`. Với mỗi detection, pipeline
-thu bbox vào 20% mỗi cạnh ngang, 15% phía trên và 10% phía dưới để giảm nền, rồi
-lấy median trong lõi. Nếu IQR của lõi lớn hơn `--depth-max-iqr`, hệ thống trả
-`unknown` thay vì ép một band.
+`[depth]` chọn checkpoint
+`depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf` và ba mốc mét. Giá trị
+trong bbox chỉ dùng bổ sung thông tin; bbox chưa được geometry xác nhận vẫn có
+`safety_evaluable=false`. Cấu hình `allow_relative_alerts=true` bị loader từ chối
+chủ động. `model_revision` khóa đúng Hugging Face commit; runtime log vẫn ghi lại
+revision thực tế.
 
-Các ngưỡng mặc định vẫn là:
+`[geometry]` chứa FOV, vùng fit mặt sàn, hình thang corridor, ngưỡng chiều cao
+vật cản, sai số RANSAC và kích thước component. Với camera/sensor có intrinsics
+thật, truyền `fx`, `fy`, `cx`, `cy` trong depth result thay cho FOV ước lượng.
 
-```text
-relative depth < 1/3       -> far
-1/3 <= relative depth < 2/3 -> medium
-relative depth >= 2/3      -> near
-```
+`[safety]` chứa số frame xác nhận/rearm, cooldown, TTC và hai deadline freshness.
+Mọi thay đổi các ngưỡng này phải được lưu cùng config hash và đánh giá lại trên
+scenario set đã khóa.
 
-Giá trị lớn hơn nghĩa là tương đối gần hơn trong frame hiện tại. Không so sánh
-trực tiếp giá trị giữa hai camera, hai cảnh hoặc hai thời điểm như một thước đo
-vật lý. Có thể thay ngưỡng qua CLI, nhưng chỉ nên làm sau khi chọn trên validation
-set khóa; việc thay ngưỡng không biến relative depth thành metric depth.
+Checkpoint relative cũ vẫn đọc được để tương thích mô tả cảnh. Nó được chuẩn hóa
+2–98% trong từng frame, không có đơn vị mét và không bao giờ đi vào orchestrator
+cảnh báo.
 
 ## 12. Định dạng kết quả và session log
 
@@ -852,16 +880,25 @@ Một detection có dạng:
   "confidence": 0.95,
   "bbox_xyxy": [49.5, 399.2, 247.0, 903.3],
   "direction": "left",
-  "obstacle_candidate": false,
-  "candidate_reason": "outside_central_travel_zone",
-  "depth_zone": "medium",
-  "relative_depth": 0.56,
-  "depth_confidence": 0.9685,
-  "depth_iqr": 0.0315,
-  "depth_reason": "relative_bbox_core",
+  "obstacle_candidate": true,
+  "geometry_confirmed": true,
+  "safety_evaluable": true,
+  "distance_m": 1.42,
+  "depth_zone": "near",
+  "depth_confidence": 0.93,
+  "depth_reason": "metric_bbox_core",
+  "proximity_reason": "metric_floor_geometry_with_semantics",
+  "track_id": 7,
+  "track_hits": 3,
+  "approach_speed_mps": 0.18,
+  "time_to_collision_s": 7.89,
   "depth_sample_xyxy": [89, 475, 208, 853]
 }
 ```
+
+Payload frame còn có `geometry`, `risk_evidence_current`, `depth_used_for_alert`,
+`alert_evidence`, `captured_at`, `result_age_ms` và `stale_for_safety`. Mảng depth
+2D bị loại khỏi JSON để tránh log quá lớn.
 
 Kết quả OCR burst bổ sung các trường:
 
@@ -910,7 +947,7 @@ Các event thường gặp:
 
 | Event | Ý nghĩa |
 |---|---|
-| `session_started` | Bắt đầu demo, lưu camera/depth/control |
+| `session_started` | Bắt đầu demo, lưu camera/depth/control và runtime manifest/hash |
 | `vision` | Một kết quả vision mới |
 | `command` | Người dùng nhấn phím semantic; có `accepted` |
 | `semantic_started` | Worker bắt đầu OCR/scene/VQA/microphone |
@@ -1084,6 +1121,22 @@ python -m pip wheel . \
 
 Không đánh dấu một chức năng “ổn định” chỉ vì `doctor` hoặc unit test pass.
 
+### 14.4 Đánh giá safety theo sự kiện
+
+Tạo JSONL frame-level theo schema trong
+[`safety-evaluation.md`](safety-evaluation.md), rồi chạy:
+
+```bash
+secondeye-evaluate-safety \
+  --input /duong/dan/scenario_frames.jsonl \
+  --max-source-age-ms 750 \
+  --output results/safety_metrics.json
+```
+
+Báo cáo gồm hazard-event recall, critical-event recall, false alerts/phút,
+stale alerts và latency P50/P95/P99. Công cụ không tự tạo ground truth và không
+biến log demo chưa gán nhãn thành bằng chứng đánh giá.
+
 ## 15. Xử lý lỗi thường gặp
 
 ### 15.1 `run_mvp.sh` báo chưa có runtime
@@ -1217,16 +1270,16 @@ toàn nếu chưa có đánh giá độc lập.
 Kiểm tra lần lượt:
 
 - depth đã bật chưa;
-- `depth_zone` có phải `near` không;
-- `obstacle_candidate` có phải `true` không;
-- bbox có nằm vùng giữa không;
-- lớp có nằm trong `risk.candidate_classes` không;
+- `depth.depth_type` có phải `metric` không;
+- `geometry.usable` có phải `true` không; nếu không, xem `geometry.reason`;
+- vùng có `geometry_confirmed=true` và `safety_evaluable=true` không;
+- `distance_m`/TTC có đi vào ngưỡng cảnh báo không;
 - detection đã xuất hiện đủ 2 frame chưa;
 - cảnh báo có đang trong cooldown 4 giây không;
-- depth có bị loại vì `depth_age_ms` quá lớn không.
+- `stale_for_safety` có phải `false` không;
+- depth có bị loại vì `depth_age_ms` hoặc `result_age_ms` quá lớn không;
 - `depth_synchronized` có phải `true` không;
-- `depth_reason` có phải `ambiguous_bbox_depth` hoặc
-  `insufficient_valid_depth` không.
+- `risk_evidence_current` có phải `true` không.
 
 Việc không có cảnh báo không có nghĩa đường đi an toàn.
 
@@ -1245,9 +1298,13 @@ kể; giảm độ phân giải/tần suất mục tiêu hoặc tắt depth đ�
 
 - Đây là integration baseline pretrained, không phải model đã fine-tune cho môi
   trường của người khiếm thị.
-- Detection chỉ hỗ trợ 15 lớp được ánh xạ; candidate cảnh báo chỉ gồm 10 lớp.
-- Depth monocular là tương đối, không đo mét và có thể thay đổi giữa các frame.
-- Cảnh báo chỉ dựa trên label + hướng, chưa có object tracking ID đầy đủ.
+- YOLO có 15 lớp ánh xạ; geometry class-agnostic giảm phụ thuộc nhãn nhưng vẫn
+  có thể bỏ sót vật thấp, trong suốt, phản chiếu hoặc ngoài corridor.
+- Metric monocular depth có đơn vị mét nhưng vẫn có scale error. Ưu tiên sensor
+  depth đã căn chỉnh và intrinsics thật khi phần cứng hỗ trợ.
+- Tracking là IoU tracker nhẹ, không phải re-identification; che khuất dài có thể
+  tạo track mới.
+- Phát hiện hố hụt/cạnh cầu thang chưa đủ tin cậy để bật trong safety runtime.
 - Apple Vision/PaddleOCR, BLIP và Whisper vẫn có thể sai dù `success: true`.
 - Confidence VQA là token-generation score chưa calibration, không phải xác suất
   câu trả lời đúng.
@@ -1257,6 +1314,8 @@ kể; giảm độ phân giải/tần suất mục tiêu hoặc tắt depth đ�
 - Tốc độ cấu hình là mục tiêu; tốc độ thực tế phụ thuộc MPS/CPU và model đang
   chạy.
 - Không có kết quả phát hiện/cảnh báo không chứng minh cảnh an toàn.
+- Chưa có test set safety độc lập đủ lớn; unit test và smoke model không thay thế
+  scenario replay/human review.
 - Fine-tuning chỉ là hướng tương lai tùy chọn, không phải bước còn thiếu bắt buộc
   của MVP hiện tại.
 

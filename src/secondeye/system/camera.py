@@ -14,6 +14,7 @@ class FramePacket:
     frame_id: int
     captured_at: float
     frame: Any
+    depth_result: dict[str, object] | None = None
 
 
 class LatestFrameBuffer:
@@ -36,7 +37,13 @@ class LatestFrameBuffer:
         self._closed = False
         self._error: Exception | None = None
 
-    def publish(self, frame: Any, captured_at: float | None = None) -> FramePacket:
+    def publish(
+        self,
+        frame: Any,
+        captured_at: float | None = None,
+        *,
+        depth_result: dict[str, object] | None = None,
+    ) -> FramePacket:
         if frame is None:
             raise ValueError("frame không được là None")
         with self._condition:
@@ -45,6 +52,7 @@ class LatestFrameBuffer:
                 frame_id=next_id,
                 captured_at=self.clock() if captured_at is None else captured_at,
                 frame=frame,
+                depth_result=depth_result,
             )
             self._packet = packet
             if (
@@ -66,7 +74,12 @@ class LatestFrameBuffer:
             if packet is None:
                 return None
             frame = packet.frame.copy() if copy_frame else packet.frame
-            return FramePacket(packet.frame_id, packet.captured_at, frame)
+            return FramePacket(
+                packet.frame_id,
+                packet.captured_at,
+                frame,
+                packet.depth_result,
+            )
 
     def recent(
         self,
@@ -101,6 +114,7 @@ class LatestFrameBuffer:
                     packet.frame_id,
                     packet.captured_at,
                     packet.frame.copy() if copy_frame else packet.frame,
+                    packet.depth_result,
                 )
                 for packet in eligible
             ]
@@ -124,7 +138,12 @@ class LatestFrameBuffer:
             if self._packet is None or self._packet.frame_id <= after_frame_id:
                 return None
             packet = self._packet
-            return FramePacket(packet.frame_id, packet.captured_at, packet.frame.copy())
+            return FramePacket(
+                packet.frame_id,
+                packet.captured_at,
+                packet.frame.copy(),
+                packet.depth_result,
+            )
 
     def close(self, error: Exception | None = None) -> None:
         with self._condition:
@@ -225,6 +244,51 @@ class LatestFrameCapture:
             self.capture.release()
 
 
+class SynchronizedDepthCapture:
+    """Feed an RGB + registered metric-depth provider into the same runtime."""
+
+    def __init__(self, provider: Any) -> None:
+        self.provider = provider
+        self.frames = LatestFrameBuffer()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "SynchronizedDepthCapture":
+        if self._thread is None:
+            self._thread = threading.Thread(
+                target=self._run,
+                name="secondeye-synchronized-depth-capture",
+                daemon=True,
+            )
+            self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                frame, aligned_depth = self.provider.read()
+                self.frames.publish(
+                    frame,
+                    captured_at=float(aligned_depth.captured_at),
+                    depth_result=aligned_depth.as_result(),
+                )
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.frames.close(exc)
+        else:
+            self.frames.close()
+
+    def stop(self) -> None:
+        self._stop.set()
+        close = getattr(self.provider, "close", None)
+        if callable(close):
+            close()
+        self.frames.close()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+
 class AsyncVisionRuntime:
     """Run slow models off the UI thread and always consume the newest frame."""
 
@@ -236,17 +300,21 @@ class AsyncVisionRuntime:
         detection_fps: float = 12.0,
         depth_fps: float = 3.0,
         max_depth_age_seconds: float = 0.50,
+        max_result_age_seconds: float = 0.75,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if detection_fps <= 0 or depth_fps <= 0:
             raise ValueError("detection_fps và depth_fps phải dương")
         if max_depth_age_seconds <= 0:
             raise ValueError("max_depth_age_seconds phải dương")
+        if max_result_age_seconds <= 0:
+            raise ValueError("max_result_age_seconds phải dương")
         self.system = system
         self.frames = frames
         self.detection_interval = 1.0 / detection_fps
         self.depth_interval = 1.0 / depth_fps
         self.max_depth_age_seconds = max_depth_age_seconds
+        self.max_result_age_seconds = max_result_age_seconds
         self.clock = clock
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -291,47 +359,19 @@ class AsyncVisionRuntime:
                 started = self.clock()
                 last_detection_started = started
 
-                should_run_depth = (
+                should_run_depth = packet.depth_result is not None or (
                     self.system.depth is not None
                     and started - last_depth_completed >= self.depth_interval
                 )
                 detection = self.system.detector.predict_bgr(packet.frame)
                 detection_completed = self.clock()
-                fast_path_enabled = (
-                    self.system.orchestrator.confirmation_frames == 1
-                )
-                if should_run_depth and fast_path_enabled:
-                    # A clearly large central bbox can trigger the emergency
-                    # fast path now; depth enrichment continues afterwards.
-                    preliminary = self.system.fuse_detection_and_depth(
-                        detection,
-                        None,
-                        started_at=started,
-                    )
-                    if preliminary["alerts"]:
-                        preliminary.update(
-                            {
-                                "frame_id": packet.frame_id,
-                                "captured_at": packet.captured_at,
-                                "completed_at": detection_completed,
-                                "result_age_ms": round(
-                                    max(
-                                        0.0,
-                                        detection_completed - packet.captured_at,
-                                    )
-                                    * 1000.0,
-                                    2,
-                                ),
-                                "depth_source_frame_id": latest_depth_frame_id,
-                                "depth_synchronized": False,
-                                "depth_rejection_reason": "fast_path_pending_depth",
-                            }
-                        )
-                        with self._lock:
-                            self._latest = preliminary
 
                 if should_run_depth:
-                    latest_depth = self.system.depth.predict_bgr(packet.frame)
+                    latest_depth = (
+                        packet.depth_result
+                        if packet.depth_result is not None
+                        else self.system.depth.predict_bgr(packet.frame)
+                    )
                     # Age from the source frame capture time, not from model
                     # completion, so stale depth cannot be treated as fresh.
                     latest_depth_at = packet.captured_at
@@ -354,20 +394,18 @@ class AsyncVisionRuntime:
                     previous_detection_completed is not None
                     and detection_completed > previous_detection_completed
                 ):
-                    instant = 1.0 / (
-                        detection_completed - previous_detection_completed
-                    )
+                    instant = 1.0 / (detection_completed - previous_detection_completed)
                     self.measured_detection_fps = (
                         instant
                         if self.measured_detection_fps == 0.0
                         else 0.8 * self.measured_detection_fps + 0.2 * instant
                     )
                 previous_detection_completed = detection_completed
-                completed = self.clock()
+                fusion_started = self.clock()
                 depth_age = (
                     None
                     if latest_depth_at is None
-                    else max(0.0, completed - latest_depth_at)
+                    else max(0.0, fusion_started - latest_depth_at)
                 )
                 usable_depth = (
                     latest_depth
@@ -383,14 +421,28 @@ class AsyncVisionRuntime:
                     usable_depth,
                     started_at=started,
                     depth_age_ms=None if depth_age is None else depth_age * 1000.0,
+                    captured_at=packet.captured_at,
+                    safety_enabled=(
+                        fusion_started - packet.captured_at
+                        <= self.max_result_age_seconds
+                    ),
+                    safety_age_check=lambda: (
+                        self.clock() - packet.captured_at <= self.max_result_age_seconds
+                    ),
                 )
+                completed = self.clock()
+                result_age = max(0.0, completed - packet.captured_at)
                 payload.update(
                     {
                         "frame_id": packet.frame_id,
                         "captured_at": packet.captured_at,
                         "completed_at": completed,
-                        "result_age_ms": round(
-                            max(0.0, completed - packet.captured_at) * 1000.0, 2
+                        "result_age_ms": round(result_age * 1000.0, 2),
+                        "stale_for_safety": bool(
+                            result_age > self.max_result_age_seconds
+                        ),
+                        "max_result_age_ms": round(
+                            self.max_result_age_seconds * 1000.0, 2
                         ),
                         "depth_source_frame_id": latest_depth_frame_id,
                         "depth_synchronized": bool(

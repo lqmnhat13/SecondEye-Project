@@ -1,6 +1,6 @@
 # Tài liệu SecondEye
 
-Cập nhật: 2026-08-30.
+Cập nhật: 2026-09-03.
 
 Thư mục tài liệu được tổ chức theo mục đích sử dụng. Điểm bắt đầu cho người mới
 là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current/` và `guides/`.
@@ -15,6 +15,8 @@ là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current
 - `current/readiness-checklist.md`: checklist thí nghiệm, demo và bảo vệ.
 - `guides/local-yolo26-runtime.md`: cách chạy detection/MVP hiện tại; các lệnh
   custom checkpoint được đánh dấu rõ là hạ tầng tương lai.
+- `guides/safety-evaluation.md`: schema scenario, metric sự kiện và contract tích
+  hợp metric depth sensor/LiDAR.
 
 ## Nghiên cứu và bằng chứng
 
@@ -27,13 +29,13 @@ là `README.md` ở thư mục gốc, sau đó đọc tài liệu trong `current
 
 - `private/thesis/`: phiếu đăng ký và đề cương nguồn. Có thông tin cá nhân; không
   đưa lên repository công khai. Phiếu đăng ký là hồ sơ lịch sử; đề cương bản 1.1
-  đã được đồng bộ với MVP mã nguồn 0.3.0 ngày 2026-08-30.
+  là hồ sơ lịch sử của MVP 0.3.0, không mô tả đầy đủ runtime 0.4.0.
 - `references/`: cẩm nang/yêu cầu làm khóa luận. `kltn-handbook.pdf` là snapshot
   nguồn nhận ngày 2026-08-03; phải đối chiếu lại với nhà trường trước khi nộp nếu
   có bản phát hành mới.
 - `design/`: sơ đồ kiến trúc nguồn `.drawio` và bản PNG. Sơ đồ thể hiện kiến trúc
-  runtime 0.3.0 và vẫn giữ ranh giới an toàn/nghiên cứu; README/mã nguồn là thẩm
-  quyền cuối cùng cho hành vi thực tế.
+  runtime 0.3.0 và chưa được cập nhật cho geometry metric 0.4.0;
+  README/mã nguồn là thẩm quyền cuối cùng cho hành vi thực tế.
 
 ## Chính sách
 

@@ -2,7 +2,7 @@
 
 SecondEye là MVP tích hợp AI đa phương thức chạy local trên macOS. Phạm vi hiện
 tại chủ đích **không fine-tune**: hệ thống ghép các model pretrained cho
-detection, relative depth, OCR, VQA, STT và TTS. Việc hoàn thành MVP và các thí
+detection, metric depth, OCR, VQA, STT và TTS. Việc hoàn thành MVP và các thí
 nghiệm hiện tại không phụ thuộc vào một checkpoint fine-tuned. Fine-tuning chỉ
 là hướng phát triển tương lai tùy chọn nếu sau này dự án có dữ liệu đã được rà
 soát đầy đủ và một câu hỏi nghiên cứu phù hợp.
@@ -15,12 +15,14 @@ soát đầy đủ và một câu hỏi nghiên cứu phù hợp.
 
 ```text
 Camera Mac/iPhone
-    -> YOLO26m COCO detection
-    -> Depth Anything V2 Small (tùy chọn)
-    -> risk fusion + cooldown
+    -> YOLO26m COCO (chỉ gắn nhãn)
+    -> Depth Anything V2 Metric Indoor Small hoặc depth sensor đã căn chỉnh
+    -> mặt sàn RANSAC + hành lang 3D + vật cản không phụ thuộc nhãn
+    -> track ID + vận tốc tiếp cận/TTC + confirmation/cooldown/rearm
     -> macOS TTS
 
-Ảnh theo yêu cầu -> Apple Vision OCR (PaddleOCR fallback) hoặc visual query/VQA -> TTS
+Ảnh theo yêu cầu -> Apple Vision OCR (PaddleOCR fallback), visual query/VQA
+                   hoặc Grounding DINO tùy chọn -> TTS
 Audio đã ghi     -> Whisper STT
 ```
 
@@ -33,9 +35,10 @@ backpack, handbag, suitcase, bottle, potted_plant,
 tv, laptop, toilet, sink, refrigerator
 ```
 
-Schema này cố ý không tuyên bố hỗ trợ cửa, cầu thang, cột, tủ, hộp hoặc thùng
-rác. Taxonomy an toàn đặc thù và dữ liệu lịch sử được bảo tồn như tài sản nghiên
-cứu cho một nhánh mở rộng tương lai; chúng không phải đầu vào bắt buộc của MVP.
+15 lớp chỉ là lớp ngữ nghĩa của YOLO, không còn là biên bao phủ an toàn. Một cụm
+3D nhô khỏi sàn trong hành lang vẫn được giữ dưới nhãn `unknown_obstacle` khi
+YOLO không nhận ra. Có thể bật Grounding DINO cho mô tả cửa, cầu thang, cột, tủ,
+hộp hoặc thùng rác; kết quả open-vocabulary không tự trở thành cảnh báo an toàn.
 
 ## Cài đặt
 
@@ -139,7 +142,8 @@ secondeye camera --camera 1 --depth \
   --width 1280 --height 720 \
   --camera-fps 30 --display-fps 30 \
   --detection-fps 12 --depth-fps 3 \
-  --max-depth-age 0.5 --overlay-max-age 0.75 \
+  --max-depth-age 0.5 --max-result-age 0.75 \
+  --confirmation-frames 2 --overlay-max-age 0.75 \
   --voice Linh --speech-rate 165
 ```
 
@@ -157,7 +161,7 @@ secondeye speech-test \
 # Detection pretrained
 secondeye image --source /duong/dan/anh.jpg --no-tts
 
-# Detection + relative depth
+# Detection + metric depth + geometry
 secondeye image --source /duong/dan/anh.jpg --depth --no-tts
 
 # OCR tiếng Việt
@@ -166,7 +170,8 @@ secondeye image --source /duong/dan/anh.jpg --ocr
 # VQA local; câu trả lời không được dùng làm chỉ dẫn điều hướng
 secondeye image \
   --source /duong/dan/anh.jpg \
-  --question "What objects are in front of me?"
+  --question "What objects are in front of me?" \
+  --open-vocabulary
 
 # Lưu unified JSON log
 secondeye image \
@@ -191,13 +196,16 @@ secondeye-detection camera-demo --camera 0
 
 ## Quy tắc risk hiện tại
 
-- Chỉ các lớp trong `risk.candidate_classes` mới là ứng viên vật cản.
-- Bbox phải nằm trong vùng di chuyển trung tâm.
-- Proximity fusion phải xác nhận band `near` trước khi phát cảnh báo gần.
-- Fusion kết hợp relative depth với tỷ lệ diện tích/chiều cao bbox trong ảnh;
-  bbox rất lớn được coi là gần, bbox rất nhỏ được coi là xa.
-- `near/medium/far` vẫn là band heuristic, không phải khoảng cách mét.
-- Cooldown ngăn cùng một cảnh báo bị đọc liên tục.
+- Bbox và depth tương đối **không bao giờ** là bằng chứng phát cảnh báo.
+- Depth metric phải cùng frame RGB; kết quả quá `--max-result-age` bị loại.
+- Pipeline dựng point cloud, fit mặt sàn, giới hạn hành lang di chuyển và tìm
+  mọi cụm nhô khỏi sàn, kể cả khi không có nhãn YOLO.
+- Khoảng cách dùng mét: mặc định emergency ≤ 0,8 m, near ≤ 1,8 m và medium ≤ 3 m.
+- Tracker tạo `track_id`, làm mượt vận tốc tiếp cận và tính TTC. TTC ≤ 1,5 s
+  được nâng thành emergency.
+- Near cần hai quan sát metric liên tiếp; emergency có thể phát ngay. Cooldown
+  chỉ chặn lặp âm thanh, không làm trạng thái vật cản trở về `IDLE`.
+- Nhiều vật cản cùng lúc được gộp thành một câu, không bỏ mất cảnh báo thứ hai.
 - TTS mặc định dùng giọng `Linh` (`vi_VN`) ở tốc độ 165 từ/phút.
 - Câu trả lời VQA ngắn được dịch bằng từ vựng và mẫu câu thị giác có kiểm soát.
   Câu ngoài miền hỗ trợ bị từ chối thay vì phát một bản dịch chưa kiểm chứng;
@@ -211,8 +219,10 @@ secondeye-detection camera-demo --camera 0
 ```text
 configs/pretrained_indoor.toml   schema và runtime config
 src/secondeye/detection/         YOLO26 COCO adapter và risk candidate
-src/secondeye/multimodal/        depth, OCR, VQA, STT và TTS adapters
-src/secondeye/system/            state machine, orchestrator và unified CLI
+src/secondeye/detection/geometry.py  mặt sàn và vật cản class-agnostic
+src/secondeye/multimodal/        metric depth/provider, OCR, VQA, STT và TTS
+src/secondeye/system/            tracking, state machine, freshness và unified CLI
+src/secondeye/evaluation/        metric safety theo sự kiện
 tests/                           unit tests không cần tải model
 scripts/fetch_smoke_asset.py     tải ảnh smoke test có thể tái tạo
 ```
@@ -231,9 +241,13 @@ DOCX/PDF/XLSX và kết quả chạy được giữ local và bị `.gitignore` 
 
 ## Giới hạn đã biết
 
-- 15 lớp mới là schema integration dễ hơn, không phải taxonomy an toàn hoàn chỉnh.
+- Nhãn YOLO/Grounding DINO vẫn có thể sai; an toàn dựa vào geometry metric nhưng
+  geometry cũng có thể thất bại khi sàn không thấy rõ hoặc depth nhiễu.
 - Chín threshold mới ngoài sáu lớp benchmark cũ đang là giá trị provisional 0.35.
-- Relative monocular depth không cung cấp khoảng cách tuyệt đối.
+- Metric monocular depth có sai số scale; depth sensor/LiDAR đã căn chỉnh được ưu
+  tiên. FOV ước lượng phải thay bằng intrinsics thật khi tích hợp camera riêng.
+- Chưa có ground-truth safety test set đủ độc lập, nên chưa được dùng như thiết
+  bị điều hướng. Chạy `secondeye-evaluate-safety` trước mọi pilot có người dùng.
 - Apple Vision/PaddleOCR, BLIP và Whisper vẫn cần benchmark trên dữ liệu thực tế.
 - Camera demo cần kiểm thử trực tiếp vì quyền camera và chỉ số thiết bị phụ thuộc macOS.
 - Fine-tuning không thuộc phạm vi phiên bản hiện tại. Nếu được thực hiện trong

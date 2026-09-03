@@ -19,6 +19,15 @@ VI_LABELS = {
     "toilet": "bồn cầu",
     "sink": "bồn rửa",
     "refrigerator": "tủ lạnh",
+    "unknown_obstacle": "vật cản",
+    "door": "cửa",
+    "glass_door": "cửa kính",
+    "stairs": "cầu thang",
+    "column": "cột",
+    "cabinet": "tủ",
+    "box": "hộp",
+    "trash_can": "thùng rác",
+    "curb": "bậc lề",
 }
 
 VI_DIRECTIONS = {
@@ -28,6 +37,7 @@ VI_DIRECTIONS = {
 }
 
 VI_DEPTH_ZONES = {
+    "emergency": "khẩn cấp",
     "near": "gần",
     "medium": "trung bình",
     "far": "xa",
@@ -36,6 +46,7 @@ VI_DEPTH_ZONES = {
 
 VI_STATES = {
     "WARMING_UP": "ĐANG KHỞI ĐỘNG",
+    "STALE": "KẾT QUẢ QUÁ HẠN",
     "IDLE": "SẴN SÀNG",
     "OBSTACLE": "CẢNH BÁO",
     "READ": "ĐỌC CHỮ",

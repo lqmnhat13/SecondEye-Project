@@ -1,4 +1,4 @@
-"""Relative monocular depth adapter for Depth Anything V2 Small."""
+"""Metric-first monocular depth adapter and conservative bbox sampling."""
 
 from __future__ import annotations
 
@@ -12,11 +12,7 @@ from secondeye.multimodal._model_loading import _from_pretrained_offline_first
 
 @dataclass(frozen=True, slots=True)
 class DepthFusionConfig:
-    """Safety-oriented settings for turning relative depth into coarse bands.
-
-    Thresholds remain deliberately non-metric. They can be tuned on a locked
-    validation set, but must not be presented as distances in metres.
-    """
+    """Settings for visual depth summaries and metric risk bands."""
 
     medium_threshold: float = 1.0 / 3.0
     near_threshold: float = 2.0 / 3.0
@@ -25,6 +21,11 @@ class DepthFusionConfig:
     bottom_inset: float = 0.10
     min_valid_pixels: int = 16
     max_iqr: float = 0.35
+    emergency_distance_m: float = 0.80
+    warning_distance_m: float = 1.80
+    medium_distance_m: float = 3.00
+    metric_percentile: float = 25.0
+    # Diagnostic/UI compatibility only; bbox size is not safety evidence.
     medium_bbox_area_fraction: float = 0.025
     near_bbox_area_fraction: float = 0.12
     medium_bbox_height_fraction: float = 0.25
@@ -32,9 +33,7 @@ class DepthFusionConfig:
 
     def __post_init__(self) -> None:
         if not 0.0 < self.medium_threshold < self.near_threshold < 1.0:
-            raise ValueError(
-                "depth thresholds phải thỏa 0 < medium < near < 1"
-            )
+            raise ValueError("depth thresholds phải thỏa 0 < medium < near < 1")
         for name, value in (
             ("horizontal_inset", self.horizontal_inset),
             ("top_inset", self.top_inset),
@@ -50,9 +49,15 @@ class DepthFusionConfig:
             raise ValueError("max_iqr phải nằm trong (0, 1]")
         if not (
             0.0
-            < self.medium_bbox_area_fraction
-            < self.near_bbox_area_fraction
-            < 1.0
+            < self.emergency_distance_m
+            < self.warning_distance_m
+            < self.medium_distance_m
+        ):
+            raise ValueError("ngưỡng mét phải thỏa 0 < emergency < warning < medium")
+        if not 0.0 < self.metric_percentile <= 50.0:
+            raise ValueError("metric_percentile phải nằm trong (0, 50]")
+        if not (
+            0.0 < self.medium_bbox_area_fraction < self.near_bbox_area_fraction < 1.0
         ):
             raise ValueError("ngưỡng bbox area phải thỏa 0 < medium < near < 1")
         if not (
@@ -107,19 +112,15 @@ def attach_bbox_proximity_zones(
     frame_height: int,
     config: DepthFusionConfig = DEFAULT_DEPTH_FUSION_CONFIG,
 ) -> list[dict[str, Any]]:
-    """Attach a fast coarse proximity band using only bbox geometry."""
+    """Attach a diagnostic bbox band; never use it to issue a safety alert."""
     if frame_width <= 0 or frame_height <= 0:
         raise ValueError("kích thước frame phải dương")
     enriched: list[dict[str, Any]] = []
     for original in detections:
         item = dict(original)
         x1, y1, x2, y2 = (float(value) for value in item["bbox_xyxy"])
-        x1, x2 = max(0.0, min(x1, frame_width)), max(
-            0.0, min(x2, frame_width)
-        )
-        y1, y2 = max(0.0, min(y1, frame_height)), max(
-            0.0, min(y2, frame_height)
-        )
+        x1, x2 = max(0.0, min(x1, frame_width)), max(0.0, min(x2, frame_width))
+        y1, y2 = max(0.0, min(y1, frame_height)), max(0.0, min(y2, frame_height))
         box_width = max(0.0, x2 - x1)
         box_height = max(0.0, y2 - y1)
         area_fraction = (box_width * box_height) / (frame_width * frame_height)
@@ -132,21 +133,20 @@ def attach_bbox_proximity_zones(
         item["bbox_area_fraction"] = round(area_fraction, 4)
         item["bbox_height_fraction"] = round(height_fraction, 4)
         item["bbox_proximity_zone"] = bbox_band
+        item["safety_evaluable"] = False
         item["proximity_zone"] = bbox_band
-        item["proximity_reason"] = "bbox_geometry_fast_path"
+        item["proximity_reason"] = "bbox_diagnostic_only"
         enriched.append(item)
     return enriched
 
 
 class DepthAnythingEstimator:
-    """Lazy local Depth Anything V2 Small inference.
-
-    Output is relative inverse depth only. It must never be described as metres.
-    """
+    """Lazy Depth Anything V2 adapter, preferring the indoor metric checkpoint."""
 
     def __init__(
         self,
-        model_name: str = "depth-anything/Depth-Anything-V2-Small-hf",
+        model_name: str = ("depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"),
+        revision: str | None = None,
         device: str = "auto",
     ) -> None:
         try:
@@ -165,16 +165,29 @@ class DepthAnythingEstimator:
                 device = "cpu"
         self.device = device
         self.model_name = model_name
+        self.requested_revision = revision
         self._torch = torch
+        load_kwargs = {} if revision is None else {"revision": revision}
         self.processor = _from_pretrained_offline_first(
-            AutoImageProcessor, model_name
+            AutoImageProcessor, model_name, **load_kwargs
         )
         model = _from_pretrained_offline_first(
-            AutoModelForDepthEstimation, model_name
+            AutoModelForDepthEstimation, model_name, **load_kwargs
         )
         with accelerator_guard(device, torch):
             self.model = model.to(device)
         self.model.eval()
+        self.model_revision = getattr(
+            getattr(self.model, "config", None), "_commit_hash", None
+        ) or revision
+        configured_type = str(
+            getattr(getattr(self.model, "config", None), "depth_estimation_type", "")
+        ).lower()
+        self.depth_type = (
+            "metric"
+            if configured_type == "metric" or "metric" in model_name.lower()
+            else "relative"
+        )
 
     def warmup(self) -> None:
         """Pay the one-time model/backend startup cost before live frames."""
@@ -207,30 +220,58 @@ class DepthAnythingEstimator:
                     align_corners=False,
                 ).squeeze()
             depth = resized.detach().float().cpu().numpy()
-        low, high = np.percentile(depth, (2.0, 98.0))
-        usable = bool(np.isfinite(low) and np.isfinite(high) and high > low)
-        if not usable:
-            normalized = np.zeros_like(depth, dtype=np.float32)
-        else:
-            normalized = np.clip((depth - low) / (high - low), 0.0, 1.0).astype(
-                np.float32
-            )
-        return {
+        valid = np.isfinite(depth) & (depth > 0.0)
+        valid_fraction = float(valid.mean())
+        usable = bool(valid.any() and valid_fraction >= 0.05)
+        common: dict[str, object] = {
             "schema_version": "1.0",
-            "module": "relative_depth",
+            "module": (
+                "metric_depth" if self.depth_type == "metric" else "relative_depth"
+            ),
             "success": True,
             "model": self.model_name,
+            "model_revision": self.model_revision,
             "device": self.device,
-            "relative_inverse_depth": normalized,
+            "depth_type": self.depth_type,
             "usable": usable,
-            "normalization_percentiles": [2.0, 98.0],
+            "valid_fraction": round(valid_fraction, 4),
             "latency_ms": round((time.perf_counter() - started) * 1000.0, 2),
-            "semantics": "larger_is_closer_relative_only",
-            "limitations": [
-                "near/medium/far là band tương đối theo từng frame, không phải khoảng cách mét.",
-                "depth_confidence là độ nhất quán không gian heuristic, không phải xác suất đã calibration.",
-            ],
         }
+        if self.depth_type == "metric":
+            common.update(
+                {
+                    "metric_depth_m": np.where(valid, depth, np.nan).astype(np.float32),
+                    "semantics": "larger_is_farther_metres",
+                    "limitations": [
+                        "Monocular metric depth vẫn phải được kiểm thử theo thiết bị và cảnh.",
+                        "Ưu tiên depth sensor/LiDAR đã căn chỉnh khi có sẵn.",
+                    ],
+                }
+            )
+            return common
+
+        low, high = (
+            np.percentile(depth[valid], (2.0, 98.0)) if valid.any() else (0.0, 0.0)
+        )
+        relative_usable = bool(usable and np.isfinite(high) and high > low)
+        normalized = (
+            np.clip((depth - low) / (high - low), 0.0, 1.0).astype(np.float32)
+            if relative_usable
+            else np.zeros_like(depth, dtype=np.float32)
+        )
+        common.update(
+            {
+                "relative_inverse_depth": normalized,
+                "usable": relative_usable,
+                "normalization_percentiles": [2.0, 98.0],
+                "semantics": "larger_is_closer_relative_only",
+                "limitations": [
+                    "Depth tương đối chỉ dùng mô tả cảnh, không phát cảnh báo an toàn.",
+                    "depth_confidence là heuristic, không phải xác suất đã calibration.",
+                ],
+            }
+        )
+        return common
 
 
 def attach_depth_zones(
@@ -270,6 +311,7 @@ def attach_depth_zones(
         item["bbox_area_fraction"] = round(area_fraction, 4)
         item["bbox_height_fraction"] = round(height_fraction, 4)
         item["bbox_proximity_zone"] = bbox_band
+        item["safety_evaluable"] = False
         core_x1 = x1 + int(round(box_width * config.horizontal_inset))
         core_x2 = x2 - int(round(box_width * config.horizontal_inset))
         core_y1 = y1 + int(round(box_height * config.top_inset))
@@ -303,31 +345,94 @@ def attach_depth_zones(
             relative_band = relative_depth_band(value, config)
             item["relative_depth_band"] = relative_band
             if iqr >= config.max_iqr:
-                if bool(item.get("obstacle_candidate")) and bbox_band in {
-                    "near",
-                    "far",
-                }:
-                    # Relative depth often mixes foreground/background inside a
-                    # detection box. For risk candidates, a clearly very large
-                    # or very small bbox is a useful fallback signal.
-                    item["depth_zone"] = bbox_band
-                    item["depth_reason"] = (
-                        "bbox_geometry_fallback_ambiguous_relative_depth"
-                    )
-                else:
-                    item["depth_zone"] = "unknown"
-                    item["depth_reason"] = "ambiguous_bbox_depth"
+                item["depth_zone"] = "unknown"
+                item["depth_reason"] = "ambiguous_relative_depth"
             else:
-                if bool(item.get("obstacle_candidate")) and bbox_band in {
-                    "near",
-                    "far",
-                }:
-                    item["depth_zone"] = bbox_band
-                    item["depth_reason"] = "bbox_geometry_with_relative_depth"
-                else:
-                    item["depth_zone"] = relative_band
-                    item["depth_reason"] = "relative_bbox_core"
+                item["depth_zone"] = relative_band
+                item["depth_reason"] = "relative_bbox_core_visual_only"
             item["proximity_zone"] = item["depth_zone"]
             item["proximity_reason"] = item["depth_reason"]
+        enriched.append(item)
+    return enriched
+
+
+def metric_depth_band(
+    distance_m: float,
+    config: DepthFusionConfig = DEFAULT_DEPTH_FUSION_CONFIG,
+) -> str:
+    """Map a positive metric distance to configured risk bands."""
+    if distance_m <= 0.0:
+        raise ValueError("distance_m phải dương")
+    if distance_m <= config.emergency_distance_m:
+        return "emergency"
+    if distance_m <= config.warning_distance_m:
+        return "near"
+    if distance_m <= config.medium_distance_m:
+        return "medium"
+    return "far"
+
+
+def attach_metric_depth_zones(
+    detections: list[dict[str, Any]],
+    metric_depth_m: Any,
+    *,
+    config: DepthFusionConfig = DEFAULT_DEPTH_FUSION_CONFIG,
+) -> list[dict[str, Any]]:
+    """Attach robust metre estimates to semantic boxes.
+
+    These samples enrich labels. A box becomes alertable only after it overlaps
+    a class-agnostic 3D obstacle region produced by the geometry stage.
+    """
+    import numpy as np
+
+    if not isinstance(metric_depth_m, np.ndarray) or metric_depth_m.ndim != 2:
+        raise ValueError("metric_depth_m phải là ma trận HxW")
+    height, width = metric_depth_m.shape
+    enriched: list[dict[str, Any]] = []
+    for original in detections:
+        item = dict(original)
+        x1, y1, x2, y2 = (int(round(float(v))) for v in item["bbox_xyxy"])
+        x1, x2 = max(0, min(x1, width)), max(0, min(x2, width))
+        y1, y2 = max(0, min(y1, height)), max(0, min(y2, height))
+        box_width = x2 - x1
+        box_height = y2 - y1
+        core_x1 = x1 + int(round(box_width * config.horizontal_inset))
+        core_x2 = x2 - int(round(box_width * config.horizontal_inset))
+        core_y1 = y1 + int(round(box_height * config.top_inset))
+        core_y2 = y2 - int(round(box_height * config.bottom_inset))
+        if core_x2 <= core_x1 or core_y2 <= core_y1:
+            core_x1, core_y1, core_x2, core_y2 = x1, y1, x2, y2
+        item["depth_sample_xyxy"] = [core_x1, core_y1, core_x2, core_y2]
+        item["safety_evaluable"] = False
+        sample = metric_depth_m[core_y1:core_y2, core_x1:core_x2]
+        valid = sample[np.isfinite(sample) & (sample > 0.0)]
+        required_pixels = min(config.min_valid_pixels, sample.size)
+        if valid.size < required_pixels:
+            item.update(
+                {
+                    "depth_zone": "unknown",
+                    "proximity_zone": "unknown",
+                    "distance_m": None,
+                    "depth_confidence": 0.0,
+                    "depth_reason": "insufficient_metric_depth",
+                }
+            )
+            enriched.append(item)
+            continue
+        distance = float(np.percentile(valid, config.metric_percentile))
+        median = float(np.median(valid))
+        mad = float(np.median(np.abs(valid - median)))
+        confidence = max(0.0, min(1.0, 1.0 - mad / max(median, 1e-6)))
+        band = metric_depth_band(distance, config)
+        item.update(
+            {
+                "distance_m": round(distance, 3),
+                "depth_zone": band,
+                "proximity_zone": band,
+                "depth_confidence": round(confidence, 4),
+                "depth_reason": "metric_bbox_core",
+                "proximity_reason": "metric_bbox_core",
+            }
+        )
         enriched.append(item)
     return enriched

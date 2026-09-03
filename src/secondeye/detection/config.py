@@ -78,6 +78,45 @@ class PathConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DepthRuntimeConfig:
+    model_name: str
+    model_revision: str | None
+    emergency_distance_m: float
+    warning_distance_m: float
+    medium_distance_m: float
+    metric_percentile: float
+    allow_relative_alerts: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryRuntimeConfig:
+    horizontal_fov_degrees: float
+    min_depth_m: float
+    max_depth_m: float
+    floor_region_top_fraction: float
+    corridor_top_fraction: float
+    corridor_top_width_fraction: float
+    corridor_bottom_width_fraction: float
+    min_obstacle_height_m: float
+    max_obstacle_height_m: float
+    floor_ransac_threshold_m: float
+    floor_min_inlier_ratio: float
+    floor_min_points: int
+    min_component_pixels: int
+
+
+@dataclass(frozen=True, slots=True)
+class SafetyRuntimeConfig:
+    confirmation_frames: int
+    rearm_absent_frames: int
+    cooldown_seconds: float
+    emergency_ttc_seconds: float
+    max_depth_age_seconds: float
+    max_result_age_seconds: float
+    max_evidence_gap_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class DetectionPipelineConfig:
     source_path: Path
     model: ModelConfig
@@ -88,6 +127,9 @@ class DetectionPipelineConfig:
     class_names: tuple[str, ...]
     candidate_classes: frozenset[str]
     central_zone_fraction: float
+    depth: DepthRuntimeConfig
+    geometry: GeometryRuntimeConfig
+    safety: SafetyRuntimeConfig
 
 
 def _require_table(raw: dict[str, Any], name: str) -> dict[str, Any]:
@@ -122,6 +164,13 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
     paths_raw = _require_table(raw, "paths")
     schema_raw = _require_table(raw, "class_schema")
     risk_raw = _require_table(raw, "risk")
+    depth_raw = raw.get("depth", {})
+    geometry_raw = raw.get("geometry", {})
+    safety_raw = raw.get("safety", {})
+    if not all(
+        isinstance(value, dict) for value in (depth_raw, geometry_raw, safety_raw)
+    ):
+        raise ValueError("depth/geometry/safety phải là TOML table")
     config_project_root = (
         resolved_path.parent.parent
         if resolved_path.parent.name == "configs"
@@ -236,6 +285,81 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
     if not 0.0 < central_zone_fraction < 1.0:
         raise ValueError("risk.central_zone_fraction phải nằm trong (0, 1)")
 
+    depth = DepthRuntimeConfig(
+        model_name=str(
+            depth_raw.get(
+                "model_name",
+                "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
+            )
+        ),
+        model_revision=(
+            str(depth_raw["model_revision"])
+            if depth_raw.get("model_revision")
+            else None
+        ),
+        emergency_distance_m=float(depth_raw.get("emergency_distance_m", 0.8)),
+        warning_distance_m=float(depth_raw.get("warning_distance_m", 1.8)),
+        medium_distance_m=float(depth_raw.get("medium_distance_m", 3.0)),
+        metric_percentile=float(depth_raw.get("metric_percentile", 25.0)),
+        allow_relative_alerts=bool(depth_raw.get("allow_relative_alerts", False)),
+    )
+    if depth.allow_relative_alerts:
+        raise ValueError(
+            "depth.allow_relative_alerts=true bị từ chối trong safety runtime"
+        )
+    if not (
+        0.0
+        < depth.emergency_distance_m
+        < depth.warning_distance_m
+        < depth.medium_distance_m
+    ):
+        raise ValueError("ngưỡng depth metric không hợp lệ")
+    geometry = GeometryRuntimeConfig(
+        horizontal_fov_degrees=float(geometry_raw.get("horizontal_fov_degrees", 60.0)),
+        min_depth_m=float(geometry_raw.get("min_depth_m", 0.15)),
+        max_depth_m=float(geometry_raw.get("max_depth_m", 5.0)),
+        floor_region_top_fraction=float(
+            geometry_raw.get("floor_region_top_fraction", 0.52)
+        ),
+        corridor_top_fraction=float(geometry_raw.get("corridor_top_fraction", 0.35)),
+        corridor_top_width_fraction=float(
+            geometry_raw.get("corridor_top_width_fraction", 0.24)
+        ),
+        corridor_bottom_width_fraction=float(
+            geometry_raw.get("corridor_bottom_width_fraction", 0.78)
+        ),
+        min_obstacle_height_m=float(geometry_raw.get("min_obstacle_height_m", 0.10)),
+        max_obstacle_height_m=float(geometry_raw.get("max_obstacle_height_m", 2.50)),
+        floor_ransac_threshold_m=float(
+            geometry_raw.get("floor_ransac_threshold_m", 0.06)
+        ),
+        floor_min_inlier_ratio=float(geometry_raw.get("floor_min_inlier_ratio", 0.30)),
+        floor_min_points=int(geometry_raw.get("floor_min_points", 180)),
+        min_component_pixels=int(geometry_raw.get("min_component_pixels", 80)),
+    )
+    safety = SafetyRuntimeConfig(
+        confirmation_frames=int(safety_raw.get("confirmation_frames", 2)),
+        rearm_absent_frames=int(safety_raw.get("rearm_absent_frames", 3)),
+        cooldown_seconds=float(safety_raw.get("cooldown_seconds", 4.0)),
+        emergency_ttc_seconds=float(safety_raw.get("emergency_ttc_seconds", 1.5)),
+        max_depth_age_seconds=float(safety_raw.get("max_depth_age_seconds", 0.50)),
+        max_result_age_seconds=float(safety_raw.get("max_result_age_seconds", 0.75)),
+        max_evidence_gap_seconds=float(safety_raw.get("max_evidence_gap_seconds", 1.0)),
+    )
+    if (
+        safety.confirmation_frames <= 0
+        or safety.rearm_absent_frames <= 0
+        or min(
+            safety.cooldown_seconds,
+            safety.emergency_ttc_seconds,
+            safety.max_depth_age_seconds,
+            safety.max_result_age_seconds,
+            safety.max_evidence_gap_seconds,
+        )
+        <= 0.0
+    ):
+        raise ValueError("cấu hình safety phải dương")
+
     return DetectionPipelineConfig(
         source_path=resolved_path,
         model=model,
@@ -254,4 +378,7 @@ def load_detection_config(path: Path = DEFAULT_CONFIG_PATH) -> DetectionPipeline
         class_names=class_names,
         candidate_classes=candidate_classes,
         central_zone_fraction=central_zone_fraction,
+        depth=depth,
+        geometry=geometry,
+        safety=safety,
     )

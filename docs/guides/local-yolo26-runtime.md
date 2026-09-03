@@ -1,6 +1,6 @@
 # Pipeline YOLO26 pretrained chạy local cho SecondEye
 
-Cập nhật: 2026-08-30.
+Cập nhật: 2026-09-03.
 
 Tài liệu này mô tả detection runtime đang được dùng trong MVP. Phiên bản hiện
 tại chạy `yolo26m.pt` pretrained COCO qua adapter có ánh xạ tường minh; dự án
@@ -64,9 +64,10 @@ COCO:
 | `sink` | `sink` |
 | `refrigerator` | `refrigerator` |
 
-Adapter loại mọi lớp không có mapping; không đổi tên gần đúng và không suy đoán
-cửa, cầu thang, cột, tủ, hộp hoặc thùng rác. Vì vậy schema này là baseline tích
-hợp, không phải taxonomy an toàn đầy đủ.
+Adapter YOLO loại mọi lớp không có mapping. Tuy nhiên nhánh geometry metric độc
+lập vẫn giữ vật cản không có nhãn dưới `unknown_obstacle`. Grounding DINO có thể
+bật bằng `--open-vocabulary` để bổ sung tên cho mô tả, nhưng không tự tạo bằng
+chứng safety.
 
 Sáu threshold đầu (`person`, `chair`, `table`, `sofa`, `bed`, `backpack`) kế
 thừa calibration trên development benchmark 69 ảnh/68 bbox. Chín threshold còn
@@ -74,26 +75,24 @@ lại là mặc định provisional `0.35`, chưa phải kết quả accuracy đ
 
 ## 3. Từ detection đến cảnh báo
 
-Detection 2D chỉ tạo ứng viên. Một vật chỉ phát cảnh báo khi:
+YOLO chỉ gắn nhãn. Cảnh báo được tạo khi metric depth cùng frame cho phép fit mặt
+sàn, một cụm 3D nhô khỏi sàn trong corridor, kết quả còn mới và cùng `track_id`
+đủ số quan sát xác nhận. Emergency distance/TTC có thể bỏ qua thời gian xác nhận;
+cooldown không xóa trạng thái vật cản đang hoạt động.
 
-1. lớp nằm trong `risk.candidate_classes`;
-2. tâm bbox nằm trong vùng di chuyển trung tâm;
-3. relative depth xác nhận band `near`;
-4. cùng khóa vật thể/hướng được thấy trong đủ số frame xác nhận;
-5. cảnh báo không còn trong thời gian cooldown.
-
-`near/medium/far` là mức tương đối trong từng frame, không phải khoảng cách mét.
-Khi depth tắt hoặc quá cũ, runtime không phát câu “ở gần”.
+Depth tương đối và kích thước bbox không được phép phát cảnh báo. Khi depth tắt,
+quá cũ hoặc mặt sàn không khả dụng, runtime fail closed với
+`risk_evidence_current=false`.
 
 ## 4. Output ổn định
 
 Adapter trả JSON gồm:
 
-- `schema_name`, model và device;
+- `schema_name`, model/device, hash model và hash config;
 - `source_class_id` COCO và `class_id` trong schema runtime;
 - label nguồn/label chuẩn, confidence và bbox;
 - hướng trái/giữa/phải;
-- `obstacle_candidate`, lý do và depth zone khi có;
+- `distance_m`, geometry evidence, `track_id`, approach speed và TTC khi có;
 - latency và giới hạn sử dụng.
 
 Input là ảnh OpenCV BGR `uint8`. Camera runtime dùng latest-frame buffer để bỏ

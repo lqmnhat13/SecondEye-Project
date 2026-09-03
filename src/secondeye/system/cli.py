@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import Any
 
 from secondeye.detection.config import DEFAULT_CONFIG_PATH, load_detection_config
+from secondeye.detection.geometry import GeometryObstacleConfig
 from secondeye.detection.model import PretrainedCocoDetector
 from secondeye.detection.runtime import require_detection_runtime, write_json
 from secondeye.multimodal import (
     DepthAnythingEstimator,
     DepthFusionConfig,
     FFmpegMicrophoneRecorder,
+    GroundingDinoDetector,
     MacOSTextToSpeech,
     AutomaticOcrReader,
     OcrConsensusConfig,
@@ -34,6 +36,7 @@ from .localization import localize_state
 from .overlay import UnicodeTextRenderer, draw_detection_overlays
 from .pipeline import SecondEyeSystem
 from .camera import AsyncVisionRuntime, LatestFrameCapture
+from .orchestrator import SystemOrchestrator
 from .session import json_safe
 
 
@@ -67,15 +70,52 @@ class _LazyVqa:
         return value.ask_bgr(image, question)
 
 
+class _LazyOpenVocabularyDetector:
+    def __init__(self, *, device: str = "cpu") -> None:
+        self.device = device
+        self._value: GroundingDinoDetector | None = None
+        self._lock = threading.Lock()
+
+    def predict_bgr(self, image: Any) -> dict[str, object]:
+        with self._lock:
+            self._value = self._value or GroundingDinoDetector(device=self.device)
+            value = self._value
+        return value.predict_bgr(image)
+
+
 def _json_safe(payload: object) -> object:
     return json_safe(payload)
 
 
 def _build_system(args: argparse.Namespace) -> SecondEyeSystem:
     config = load_detection_config(args.config)
+    effective_defaults = {
+        "emergency_distance": config.depth.emergency_distance_m,
+        "warning_distance": config.depth.warning_distance_m,
+        "medium_distance": config.depth.medium_distance_m,
+        "confirmation_frames": config.safety.confirmation_frames,
+        "rearm_absent_frames": config.safety.rearm_absent_frames,
+        "alert_cooldown": config.safety.cooldown_seconds,
+        "max_depth_age": config.safety.max_depth_age_seconds,
+        "max_result_age": config.safety.max_result_age_seconds,
+        "max_evidence_gap": config.safety.max_evidence_gap_seconds,
+    }
+    for name, value in effective_defaults.items():
+        if hasattr(args, name) and getattr(args, name) is None:
+            setattr(args, name, value)
     detector = PretrainedCocoDetector(config)
     depth = (
-        DepthAnythingEstimator(device=config.model.device)
+        DepthAnythingEstimator(
+            model_name=str(
+                getattr(args, "depth_model", None) or config.depth.model_name
+            ),
+            revision=(
+                None
+                if getattr(args, "depth_model", None)
+                else config.depth.model_revision
+            ),
+            device=config.model.device,
+        )
         if getattr(args, "depth", False)
         else None
     )
@@ -114,17 +154,76 @@ def _build_system(args: argparse.Namespace) -> SecondEyeSystem:
         depth=depth,
         ocr=ocr,
         vqa=vqa,
+        semantic_detector=(
+            _LazyOpenVocabularyDetector(device="cpu")
+            if getattr(args, "open_vocabulary", False)
+            else None
+        ),
         translator=translator,
         tts=tts,
-        depth_fusion_config=DepthFusionConfig(
-            medium_threshold=float(
-                getattr(args, "depth_medium_threshold", 1.0 / 3.0)
+        orchestrator=SystemOrchestrator(
+            cooldown_seconds=float(
+                getattr(args, "alert_cooldown", config.safety.cooldown_seconds)
             ),
-            near_threshold=float(
-                getattr(args, "depth_near_threshold", 2.0 / 3.0)
+            confirmation_frames=int(
+                getattr(
+                    args,
+                    "confirmation_frames",
+                    config.safety.confirmation_frames,
+                )
             ),
-            max_iqr=float(getattr(args, "depth_max_iqr", 0.35)),
+            rearm_absent_frames=int(
+                getattr(
+                    args,
+                    "rearm_absent_frames",
+                    config.safety.rearm_absent_frames,
+                )
+            ),
+            max_evidence_gap_seconds=float(
+                getattr(
+                    args,
+                    "max_evidence_gap",
+                    config.safety.max_evidence_gap_seconds,
+                )
+            ),
         ),
+        depth_fusion_config=DepthFusionConfig(
+            medium_threshold=float(getattr(args, "depth_medium_threshold", 1.0 / 3.0)),
+            near_threshold=float(getattr(args, "depth_near_threshold", 2.0 / 3.0)),
+            max_iqr=float(getattr(args, "depth_max_iqr", 0.35)),
+            emergency_distance_m=float(
+                getattr(
+                    args,
+                    "emergency_distance",
+                    config.depth.emergency_distance_m,
+                )
+            ),
+            warning_distance_m=float(
+                getattr(args, "warning_distance", config.depth.warning_distance_m)
+            ),
+            medium_distance_m=float(
+                getattr(args, "medium_distance", config.depth.medium_distance_m)
+            ),
+            metric_percentile=config.depth.metric_percentile,
+        ),
+        geometry_config=GeometryObstacleConfig(
+            horizontal_fov_degrees=config.geometry.horizontal_fov_degrees,
+            min_depth_m=config.geometry.min_depth_m,
+            max_depth_m=config.geometry.max_depth_m,
+            floor_region_top_fraction=config.geometry.floor_region_top_fraction,
+            corridor_top_fraction=config.geometry.corridor_top_fraction,
+            corridor_top_width_fraction=config.geometry.corridor_top_width_fraction,
+            corridor_bottom_width_fraction=(
+                config.geometry.corridor_bottom_width_fraction
+            ),
+            min_obstacle_height_m=config.geometry.min_obstacle_height_m,
+            max_obstacle_height_m=config.geometry.max_obstacle_height_m,
+            floor_ransac_threshold_m=config.geometry.floor_ransac_threshold_m,
+            floor_min_inlier_ratio=config.geometry.floor_min_inlier_ratio,
+            floor_min_points=config.geometry.floor_min_points,
+            min_component_pixels=config.geometry.min_component_pixels,
+        ),
+        emergency_ttc_seconds=config.safety.emergency_ttc_seconds,
         ocr_consensus_config=OcrConsensusConfig(
             max_candidates=int(getattr(args, "ocr_max_candidates", 3)),
             minimum_consensus=float(getattr(args, "ocr_min_consensus", 0.60)),
@@ -172,9 +271,9 @@ def command_doctor(args: argparse.Namespace) -> None:
     details.update(
         {
             "tts_macos": "ok" if modules["tts_macos"] else "requires macOS",
-            "tts_voice_linh_vi_vn": "ok"
-            if modules["tts_voice_linh_vi_vn"]
-            else "voice Linh unavailable",
+            "tts_voice_linh_vi_vn": (
+                "ok" if modules["tts_voice_linh_vi_vn"] else "voice Linh unavailable"
+            ),
         }
     )
     if args.ocr_smoke_image is not None:
@@ -249,6 +348,7 @@ def command_camera(args: argparse.Namespace) -> None:
         detection_fps=args.detection_fps,
         depth_fps=args.depth_fps,
         max_depth_age_seconds=args.max_depth_age,
+        max_result_age_seconds=args.max_result_age,
     ).start()
     text_renderer = UnicodeTextRenderer()
     window = "SecondEye camera"
@@ -271,7 +371,8 @@ def command_camera(args: argparse.Namespace) -> None:
             annotated = packet.frame
             result_is_fresh = bool(
                 payload is not None
-                and now - float(payload["completed_at"]) <= args.overlay_max_age
+                and now - float(payload["captured_at"])
+                <= min(args.overlay_max_age, args.max_result_age)
             )
             detections = (
                 payload["detection"]["detections"]
@@ -279,15 +380,26 @@ def command_camera(args: argparse.Namespace) -> None:
                 else []
             )
             overlays = draw_detection_overlays(cv2, annotated, detections)
-            state = "WARMING_UP" if payload is None else str(payload["state"])
+            state = (
+                "WARMING_UP"
+                if payload is None
+                else "STALE"
+                if not result_is_fresh
+                else str(payload["state"])
+            )
             detection_fps = runtime.measured_detection_fps
             depth_status = "tắt"
             if args.depth:
-                depth_status = (
-                    "đang chờ"
-                    if payload is None or payload.get("depth") is None
-                    else f"{runtime.measured_depth_fps:.1f}Hz"
-                )
+                if payload is None or payload.get("depth") is None:
+                    depth_status = "đang chờ"
+                elif payload.get("stale_for_safety"):
+                    depth_status = "quá hạn"
+                elif payload.get("geometry") and not payload["geometry"].get(
+                    "usable", False
+                ):
+                    depth_status = "không thấy sàn"
+                else:
+                    depth_status = f"{runtime.measured_depth_fps:.1f}Hz"
             status = (
                 f"{localize_state(state)} | hiển thị {display_fps:.1f} | "
                 f"camera {capture.measured_fps:.1f} | nhận diện {detection_fps:.1f} "
@@ -351,6 +463,10 @@ def _add_tts_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_depth_fusion_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--depth-model",
+        help="Checkpoint depth; mặc định lấy từ [depth].model_name",
+    )
+    parser.add_argument(
         "--depth-medium-threshold",
         type=float,
         default=1.0 / 3.0,
@@ -368,6 +484,18 @@ def _add_depth_fusion_arguments(parser: argparse.ArgumentParser) -> None:
         default=0.35,
         help="Độ phân tán depth tối đa trong lõi bbox trước khi trả unknown",
     )
+    parser.add_argument("--emergency-distance", type=float)
+    parser.add_argument("--warning-distance", type=float)
+    parser.add_argument("--medium-distance", type=float)
+
+
+def _add_safety_runtime_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--confirmation-frames", type=int)
+    parser.add_argument("--rearm-absent-frames", type=int)
+    parser.add_argument("--alert-cooldown", type=float)
+    parser.add_argument("--max-depth-age", type=float)
+    parser.add_argument("--max-result-age", type=float)
+    parser.add_argument("--max-evidence-gap", type=float)
 
 
 def _add_ocr_consensus_arguments(parser: argparse.ArgumentParser) -> None:
@@ -403,6 +531,11 @@ def build_parser() -> argparse.ArgumentParser:
     image.add_argument("--depth", action="store_true")
     image.add_argument("--ocr", action="store_true")
     image.add_argument("--question")
+    image.add_argument(
+        "--open-vocabulary",
+        action="store_true",
+        help="Bổ sung Grounding DINO cho mô tả/hỏi đáp ngữ nghĩa",
+    )
     _add_ocr_consensus_arguments(image)
     _add_depth_fusion_arguments(image)
     _add_tts_arguments(image)
@@ -418,9 +551,9 @@ def build_parser() -> argparse.ArgumentParser:
     camera.add_argument("--display-fps", type=float, default=30.0)
     camera.add_argument("--detection-fps", type=float, default=12.0)
     camera.add_argument("--depth-fps", type=float, default=3.0)
-    camera.add_argument("--max-depth-age", type=float, default=0.50)
     camera.add_argument("--overlay-max-age", type=float, default=0.75)
     _add_depth_fusion_arguments(camera)
+    _add_safety_runtime_arguments(camera)
     _add_tts_arguments(camera)
     camera.set_defaults(handler=command_camera, ocr=False, question=None)
 
@@ -435,12 +568,17 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--display-fps", type=float, default=30.0)
     demo.add_argument("--detection-fps", type=float, default=12.0)
     demo.add_argument("--depth-fps", type=float, default=3.0)
-    demo.add_argument("--max-depth-age", type=float, default=0.50)
     demo.add_argument("--overlay-max-age", type=float, default=1.50)
     _add_depth_fusion_arguments(demo)
+    _add_safety_runtime_arguments(demo)
     _add_ocr_consensus_arguments(demo)
     demo.add_argument("--ocr-burst-frames", type=int, default=5)
     demo.add_argument("--ocr-burst-window", type=float, default=0.60)
+    demo.add_argument(
+        "--open-vocabulary",
+        action="store_true",
+        help="Tải Grounding DINO khi lần đầu mô tả cảnh",
+    )
     demo.add_argument(
         "--question",
         default="What objects are directly in front of me?",

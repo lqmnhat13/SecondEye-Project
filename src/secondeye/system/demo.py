@@ -47,8 +47,7 @@ def voice_intent_from_transcript(text: str) -> str:
     if "lap lai" in command:
         return "repeat"
     if any(
-        phrase in command
-        for phrase in ("doc chu", "doc van ban", "doc cho", "loc chu")
+        phrase in command for phrase in ("doc chu", "doc van ban", "doc cho", "loc chu")
     ):
         return "ocr"
     if any(
@@ -239,6 +238,7 @@ def run_mvp_demo(
             "depth": args.depth,
             "semantic_device": args.semantic_device,
             "controls": "o:ocr s:scene v:vqa m:microphone r:repeat x:stop q:quit",
+            "runtime_manifest": system.runtime_manifest(),
         },
     )
     system.warmup()
@@ -258,6 +258,7 @@ def run_mvp_demo(
         detection_fps=args.detection_fps,
         depth_fps=args.depth_fps,
         max_depth_age_seconds=args.max_depth_age,
+        max_result_age_seconds=args.max_result_age,
     ).start()
     semantic = SemanticWorker(
         system,
@@ -297,7 +298,8 @@ def run_mvp_demo(
             payload = runtime.latest()
             fresh = bool(
                 payload is not None
-                and now - float(payload["completed_at"]) <= args.overlay_max_age
+                and now - float(payload["captured_at"])
+                <= min(args.overlay_max_age, args.max_result_age)
             )
             detections = (
                 payload["detection"]["detections"]
@@ -309,14 +311,25 @@ def run_mvp_demo(
                 last_logged_frame = int(payload["frame_id"])
                 logger.log("vision", payload)
             busy, semantic_status, _ = semantic.snapshot()
-            state = "WARMING_UP" if payload is None else str(payload["state"])
+            state = (
+                "WARMING_UP"
+                if payload is None
+                else "STALE"
+                if not fresh
+                else str(payload["state"])
+            )
             depth_status = "tắt"
             if args.depth:
-                depth_status = (
-                    "đang chờ"
-                    if payload is None or payload.get("depth") is None
-                    else f"{runtime.measured_depth_fps:.1f}Hz"
-                )
+                if payload is None or payload.get("depth") is None:
+                    depth_status = "đang chờ"
+                elif payload.get("stale_for_safety"):
+                    depth_status = "quá hạn"
+                elif payload.get("geometry") and not payload["geometry"].get(
+                    "usable", False
+                ):
+                    depth_status = "không thấy sàn"
+                else:
+                    depth_status = f"{runtime.measured_depth_fps:.1f}Hz"
             status = (
                 f"{localize_state(state)} | hiển thị {display_fps:.1f} | "
                 f"camera {capture.measured_fps:.1f} | nhận diện "

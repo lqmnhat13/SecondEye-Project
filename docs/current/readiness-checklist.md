@@ -2,7 +2,7 @@
 
 Chỉ đánh dấu khi có đường dẫn bằng chứng và đã chạy kiểm tra; không đánh dấu theo kế hoạch.
 
-Phạm vi cập nhật ngày 2026-08-30: checklist áp dụng cho stack pretrained. Không
+Phạm vi cập nhật ngày 2026-09-03: checklist áp dụng cho stack pretrained. Không
 có mục nào yêu cầu fine-tuning hoặc custom checkpoint. Dữ liệu độc lập vẫn cần
 cho đánh giá RQ, nhưng không phải dataset huấn luyện của MVP.
 
@@ -20,7 +20,14 @@ cho đánh giá RQ, nhưng không phải dataset huấn luyện của MVP.
 
 ## Hệ thống và an toàn
 
-- [ ] Luồng an toàn và luồng ngữ nghĩa tách rời; VQA/OCR không nghẽn cảnh báo.
+- [x] Luồng an toàn và luồng ngữ nghĩa tách rời; VQA/OCR không nghẽn cảnh báo
+  (unit/integration test, chưa thay field test).
+- [x] Bbox/depth tương đối không thể phát cảnh báo; safety chỉ nhận geometry
+  metric cùng frame và còn hạn.
+- [x] Cảnh báo dùng track ID, confirmation/rearm/cooldown; nhiều cảnh báo cùng
+  thời điểm được gộp thay vì bỏ phần tử sau.
+- [ ] Hazard/critical recall, false alerts/phút và P95/P99 latency đạt tiêu chí
+  đăng ký trước trên scenario test độc lập.
 - [ ] Chỉ một audio orchestrator phát TTS; priority/cooldown/xung đột có test.
 - [ ] VQA từ chối khi ảnh/câu hỏi không đủ bằng chứng.
 - [ ] Camera che/tối, không chữ, micro/mạng lỗi và VLM timeout có phản hồi rõ.
